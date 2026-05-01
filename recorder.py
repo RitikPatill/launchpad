@@ -60,9 +60,11 @@ async def _execute_action(page, action: dict) -> None:
             pass  # don't crash the recording over a missed click
 
 
-async def _record_async(scenes: list, output_dir: Path) -> Path:
+async def _record_async(scenes: list, output_dir: Path,
+                        viewport: tuple[int, int] | None = None) -> Path:
     from playwright.async_api import async_playwright
 
+    vw, vh = viewport or VIDEO_RESOLUTION
     output_dir.mkdir(parents=True, exist_ok=True)
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=[
@@ -70,31 +72,32 @@ async def _record_async(scenes: list, output_dir: Path) -> Path:
             "--no-sandbox",
         ])
         context = await browser.new_context(
-            viewport={"width": VIDEO_RESOLUTION[0], "height": VIDEO_RESOLUTION[1]},
+            viewport={"width": vw, "height": vh},
             record_video_dir=str(output_dir),
-            record_video_size={"width": VIDEO_RESOLUTION[0], "height": VIDEO_RESOLUTION[1]},
+            record_video_size={"width": vw, "height": vh},
             user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                         "AppleWebKit/537.36 (KHTML, like Gecko) "
                         "Chrome/120.0.0.0 Safari/537.36"),
         )
         page = await context.new_page()
-        # Friendly intro hold so the video doesn't start mid-load.
         await page.wait_for_timeout(500)
         for scene in scenes:
             for action in scene.get("actions", []):
                 await _execute_action(page, action)
-        # Friendly closing hold.
         await page.wait_for_timeout(1000)
         await context.close()
         await browser.close()
 
-    # Playwright writes a single .webm into output_dir; find and return it.
     webms = sorted(output_dir.glob("*.webm"), key=lambda p: p.stat().st_mtime)
     if not webms:
         raise RuntimeError("recorder produced no output webm")
     return webms[-1]
 
 
-def record(screenplay: dict, output_dir: Path) -> Path:
-    """Synchronous entry point. Returns path to the captured .webm."""
-    return asyncio.run(_record_async(screenplay["scenes"], output_dir))
+def record(screenplay: dict, output_dir: Path,
+           viewport: tuple[int, int] | None = None) -> Path:
+    """
+    Synchronous entry point. viewport=(w,h) for vertical Shorts mode;
+    omit for default landscape.
+    """
+    return asyncio.run(_record_async(screenplay["scenes"], output_dir, viewport))

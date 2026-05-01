@@ -31,12 +31,17 @@ from pathlib import Path
 import claude_cli
 import compositor
 import deployer
+import monitor
 import recorder
 import state
 import trigger
 import tts
 import uploader
-from agents import editor, metadata, meta_improver, screenplay, thumbnail
+from agents import (
+    editor, metadata, meta_improver, screenplay, thumbnail,
+    shorts_screenplay, shorts_metadata,
+)
+from config import SHORTS_RESOLUTION
 from config import (
     BASE_DIR,
     GITHUB_TOKEN,
@@ -232,52 +237,104 @@ def _step_uploading(v) -> None:
         except Exception as e:
             state.log("WARN", "orchestrator", f"caption upload skipped: {e}")
     state.update_video(
-        v["id"], status="shorting",
+        v["id"], status="shorts_scripting",
         youtube_video_id=video_id,
         youtube_url=result["url"],
         uploaded_at=datetime.now(timezone.utc).isoformat(),
     )
 
 
-def _step_shorting(v) -> None:
-    """
-    Generate a YouTube Shorts variant by cropping/trimming the long-form
-    video, then upload as a separate video tagged #Shorts. If anything
-    fails, mark the main video 'uploaded' anyway — Shorts are a bonus,
-    not a requirement.
-    """
-    final_path = Path(v["final_path"])
-    short_path = final_path.parent / "short.mp4"
-    try:
-        editor.make_short(source_long_video=final_path, output_path=short_path)
-    except Exception as e:
-        state.log("WARN", "orchestrator", f"shorts gen failed: {e}")
-        state.update_video(v["id"], status="uploaded")
-        return
-
-    short_title = ((v["title"] or "")[:60] + " #Shorts")[:100]
-    short_desc = (
-        (v["description"] or "")[:900]
-        + "\n\n#Shorts — full walkthrough: " + (v["youtube_url"] or "")
+def _step_shorts_scripting(v) -> None:
+    """Bespoke Shorts pipeline: dedicated Sonnet call writes a 30-50s
+    hook-driven vertical-aware script."""
+    sp = shorts_screenplay.write_shorts_screenplay(
+        title=v["project_title"],
+        description=v["project_description"],
+        repo_url=v["project_repo_url"],
+        pages_url=v["project_pages_url"],
     )
-    tags_full = (json.loads(v["tags"]) if v["tags"] else [])[:8] + ["shorts"]
+    md = shorts_metadata.write_shorts_metadata(
+        title=v["project_title"],
+        description=v["project_description"],
+        repo_url=v["project_repo_url"],
+        long_form_url=v["youtube_url"] or "",
+        script="\n".join(s.get("voice_over", "") for s in sp["scenes"]),
+    )
+    # Reuse the script and metadata columns by stashing into the existing
+    # ones — the long-form values are already on disk in renders/.
+    out_dir = Path(v["final_path"]).parent
+    (out_dir / "shorts_script.json").write_text(json.dumps(sp), encoding="utf-8")
+    (out_dir / "shorts_metadata.json").write_text(json.dumps(md), encoding="utf-8")
+    state.update_video(v["id"], status="shorts_recording")
+
+
+def _step_shorts_recording(v) -> None:
+    """Vertical 1080x1920 recording with a Shorts-specific scene list."""
+    out_dir = Path(v["final_path"]).parent
+    sp = json.loads((out_dir / "shorts_script.json").read_text(encoding="utf-8"))
+    rec_dir = out_dir / "shorts_record"
+    webm = recorder.record(sp, rec_dir, viewport=SHORTS_RESOLUTION)
+    state.update_video(v["id"], status="shorts_rendering",
+                       short_path=str(webm))  # repurpose short_path to track raw
+
+
+def _step_shorts_rendering(v) -> None:
+    """TTS + caption + ffmpeg compose into final vertical mp4."""
+    out_dir = Path(v["final_path"]).parent
+    sp = json.loads((out_dir / "shorts_script.json").read_text(encoding="utf-8"))
+    audio_path = out_dir / "shorts_narration.mp3"
+    srt_path = out_dir / "shorts_captions.srt"
+    tts.synthesize_screenplay(sp, audio_path, srt_path)
+
+    raw_short = out_dir / "shorts_raw.mp4"
+    compositor.compose(
+        video_in=Path(v["short_path"]),
+        audio_in=audio_path,
+        output_path=raw_short,
+    )
+    final_short = out_dir / "shorts_final.mp4"
+    try:
+        editor.polish_short(
+            main_video=raw_short,
+            srt=srt_path if srt_path.exists() else None,
+            output_path=final_short,
+        )
+    except Exception as e:
+        state.log("WARN", "orchestrator", f"shorts polish failed, shipping raw: {e}")
+        import shutil
+        shutil.copyfile(raw_short, final_short)
+    state.update_video(v["id"], status="shorts_uploading",
+                       short_path=str(final_short))
+
+
+def _step_shorts_uploading(v) -> None:
+    """Upload the polished Short as a separate video. Failures here mark
+    the main video 'uploaded' regardless — Shorts are a bonus."""
+    out_dir = Path(v["final_path"]).parent
+    md = json.loads((out_dir / "shorts_metadata.json").read_text(encoding="utf-8"))
+
+    title = md.get("title") or (v["title"] or "")[:50]
+    if "#Shorts" not in title.lower() and "#shorts" not in title.lower():
+        title = (title[:42] + " #Shorts")[:100]
+    description = md.get("description") or (
+        f"Built autonomously. Full walkthrough: {v['youtube_url'] or ''}\n\n"
+        f"AI disclosure: voice is AI-generated; code is real.\n\n#Shorts #AI #LLM"
+    )
+    tags = md.get("tags") or ["shorts", "ai", "llm", "agents"]
 
     try:
         result = uploader.upload(
-            video_path=short_path,
-            title=short_title,
-            description=short_desc,
-            tags=tags_full,
+            video_path=Path(v["short_path"]),
+            title=title, description=description, tags=tags[:15],
         )
         state.update_video(
             v["id"], status="uploaded",
-            short_path=str(short_path),
             short_video_id=result["video_id"],
             short_url=result["url"],
         )
     except Exception as e:
-        state.log("WARN", "orchestrator", f"shorts upload failed (long-form is live): {e}")
-        state.update_video(v["id"], status="uploaded", short_path=str(short_path))
+        state.log("WARN", "orchestrator", f"shorts upload failed (long-form live): {e}")
+        state.update_video(v["id"], status="uploaded")
 
 
 def _cleanup_old_renders() -> None:
@@ -322,8 +379,13 @@ def tick() -> None:
     trigger.scan_all_siblings()
 
     # Phase 2 — drive the oldest in-flight video forward.
-    for status_to_drive in ("queued", "deploying", "scripting", "recording",
-                            "rendering", "uploading", "shorting"):
+    PIPELINE = (
+        "queued", "deploying", "scripting", "recording", "rendering",
+        "uploading",
+        "shorts_scripting", "shorts_recording", "shorts_rendering",
+        "shorts_uploading",
+    )
+    for status_to_drive in PIPELINE:
         v = state.next_video_in_status(status_to_drive)
         if not v:
             continue
@@ -335,10 +397,8 @@ def tick() -> None:
             v = state.get_video(v["id"])
             status_to_drive = "deploying"
 
-        # Upload step is gated by pacing rules. Shorting reuses the same
-        # gate (don't double-publish in a 5-min window even if main was
-        # within the cap).
-        if status_to_drive in ("uploading", "shorting"):
+        # Both upload steps gated by pacing rules.
+        if status_to_drive in ("uploading", "shorts_uploading"):
             ok, reason = _can_upload_now()
             if not ok:
                 state.log("INFO", "orchestrator",
@@ -356,8 +416,14 @@ def tick() -> None:
                 _step_rendering(v)
             elif status_to_drive == "uploading":
                 _step_uploading(v)
-            elif status_to_drive == "shorting":
-                _step_shorting(v)
+            elif status_to_drive == "shorts_scripting":
+                _step_shorts_scripting(v)
+            elif status_to_drive == "shorts_recording":
+                _step_shorts_recording(v)
+            elif status_to_drive == "shorts_rendering":
+                _step_shorts_rendering(v)
+            elif status_to_drive == "shorts_uploading":
+                _step_shorts_uploading(v)
         except claude_cli.RateLimited as e:
             state.log("WARN", "orchestrator", str(e))
         except Exception as e:
@@ -417,6 +483,16 @@ def _maybe_run_meta() -> None:
         state.log("ERROR", "orchestrator", f"meta-improver failed: {e}")
 
 
+def _maybe_run_monitor() -> None:
+    """Daily YouTube stats poll — feeds evidence to the meta-improver."""
+    if not monitor.should_run_monitor():
+        return
+    try:
+        monitor.run_monitor()
+    except Exception as e:
+        state.log("ERROR", "orchestrator", f"monitor failed: {e}")
+
+
 def run_forever() -> None:
     state.init_db()
     state.log("INFO", "orchestrator", f"launchpad starting (pid={os.getpid()})")
@@ -426,6 +502,7 @@ def run_forever() -> None:
     while True:
         try:
             tick()
+            _maybe_run_monitor()
             _maybe_run_meta()
         except Exception:
             state.log("ERROR", "orchestrator",
@@ -459,7 +536,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="launchpad — autonomous YouTube agent")
     parser.add_argument("command", nargs="?", default="run",
                         choices=["run", "tick", "scan", "auth", "preflight",
-                                 "status", "health", "meta", "force_test"])
+                                 "status", "health", "meta", "monitor", "force_test"])
     args = parser.parse_args()
     state.init_db()
 
@@ -480,6 +557,9 @@ def main() -> None:
         _print_health()
     elif args.command == "meta":
         meta_improver.run_meta_review()
+    elif args.command == "monitor":
+        n = monitor.run_monitor()
+        print(f"recorded stats for {n} video(s)")
     elif args.command == "force_test":
         # One-off: queue a video for autodev itself (the orchestrator
         # repo) so we can verify pipeline output before any real

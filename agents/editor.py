@@ -135,6 +135,59 @@ def _card_to_clip(card_path: Path, out_clip: Path, duration_s: float = 2.0,
     return out_clip
 
 
+def polish_short(*, main_video: Path, srt: Path | None,
+                 output_path: Path) -> Path:
+    """
+    Polish a vertical Short. Different priorities than long-form:
+      - NO intro/outro cards — every second matters in a 30-50s video
+      - BIG burned-in captions (font size ~36, center-bottom, opaque
+        background) because Shorts are often watched silently
+      - Light noise reduction skipped (waste of render time at this length)
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not srt or not srt.exists():
+        # No captions to burn in — just transcode for upload safety.
+        cmd = [
+            _ffmpeg(), "-y", "-i", str(main_video),
+            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+            "-c:a", "aac", "-b:a", "128k",
+            "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+            str(output_path),
+        ]
+    else:
+        # Burn captions large + centered. Different style from long-form:
+        # Shorts captions need to be visible at thumbnail-preview size.
+        srt_for_ffmpeg = str(srt).replace("\\", "/").replace(":", "\\:")
+        style = (
+            "FontName=Segoe UI,"
+            "FontSize=32,"
+            "PrimaryColour=&HFFFFFF&,"
+            "OutlineColour=&H80000000&,"
+            "BackColour=&HC0000000&,"
+            "Outline=2,"
+            "Shadow=0,"
+            "BorderStyle=4,"
+            "Alignment=2,"
+            "MarginV=180"
+        )
+        cmd = [
+            _ffmpeg(), "-y", "-i", str(main_video),
+            "-vf", f"subtitles='{srt_for_ffmpeg}':force_style='{style}'",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+            "-c:a", "aac", "-b:a", "128k",
+            "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+            str(output_path),
+        ]
+    proc = subprocess.run(cmd, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace")
+    if proc.returncode != 0 or not output_path.exists():
+        # Fallback: copy un-polished if burn-in failed.
+        import shutil
+        shutil.copyfile(main_video, output_path)
+    return output_path
+
+
 def make_short(*, source_long_video: Path, output_path: Path,
                max_seconds: int = 55) -> Path:
     """

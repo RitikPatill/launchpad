@@ -72,16 +72,19 @@ CONTEXT:
 
 DATA YOU CAN READ:
 - Today is {today}. 7-day cutoff: {cutoff}.
-- Logs and DB rows via sqlite3:
+- Recent videos via sqlite3:
     python -c "import state; con=state.connect().__enter__(); [print(dict(r)) for r in con.execute('SELECT * FROM videos ORDER BY id DESC LIMIT 10')]"
-- YouTube video stats (views, likes, comments) for any uploaded video
-  with youtube_video_id, via:
-    curl -s "https://www.googleapis.com/youtube/v3/videos?id=<VIDEO_ID>&key=..."
-    (or use the existing oauth token in creds/youtube_token.json — but
-    that requires a slightly different scope; for v1 you can use the
-    YouTube public watch page HTML to read view counts.)
-- The current agent prompts in launchpad/agents/screenplay.py,
-  metadata.py, thumbnail.py.
+- **VIEW STATS for every uploaded video** (long-form AND Shorts) —
+  pulled daily by the stats monitor into the `video_stats` table.
+  Time-series: each video has multiple rows showing growth over time.
+    python -c "
+    import state
+    with state.connect() as con:
+        for r in con.execute('SELECT * FROM video_stats ORDER BY ts DESC LIMIT 50'):
+            print(dict(r))"
+  Use this to find: which titles drove the most views? Which Shorts hit
+  vs flopped? Are long-form videos retaining vs Shorts?
+- The current agent prompts in launchpad/agents/*.py.
 
 YOUR THREE OUTPUTS:
 
@@ -98,12 +101,17 @@ YOUR THREE OUTPUTS:
    - "Edits applied": filled in after you make them.
 
 2. PROMPT EDITS — at most {max_edits} files in launchpad/agents/*.py.
-   ONLY edit the PROMPT / CANDIDATES_PROMPT / RANK_AND_FINAL_PROMPT
-   string constants. DO NOT touch:
+   Editable PROMPT-style constants: PROMPT, CANDIDATES_PROMPT,
+   RANK_AND_FINAL_PROMPT (in screenplay.py, metadata.py,
+   shorts_screenplay.py, shorts_metadata.py). Anchor edits to the
+   stats evidence: "videos with hook X got 4x views, bias screenplay
+   prompt toward that style".
+   DO NOT touch:
    - orchestrator.py, recorder.py, tts.py, compositor.py, uploader.py,
-     state.py, config.py, trigger.py, claude_cli.py
+     deployer.py, monitor.py, state.py, config.py, trigger.py, claude_cli.py
    - Function signatures, imports, control flow inside agents/*.py
-   - The AI-content disclosure block in metadata.py (non-negotiable)
+   - The AI-content disclosure blocks (non-negotiable in both metadata
+     prompts)
 
 3. RECORD each edit in the prompt_versions table:
    python -c "import state; state.record_prompt_edit('screenplay', '<one-line diff summary>', '<rationale>')"

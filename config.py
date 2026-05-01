@@ -103,8 +103,22 @@ WEEKEND_UPLOAD_HOURS = (10, 22)
 
 # --- Video config -------------------------------------------------------- #
 VIDEO_TARGET_DURATION_SECONDS = int(os.getenv("VIDEO_TARGET_DURATION_SECONDS", "75"))
-VIDEO_RESOLUTION = (1280, 720)   # 720p — keeps file size and render time low
+VIDEO_RESOLUTION = (1280, 720)   # 720p landscape for long-form
 VIDEO_FPS = 24                    # we're recording slow scrolls; 24fps is plenty
+
+# Vertical 9:16 for YouTube Shorts. 1080x1920 is YouTube's preferred
+# Shorts resolution.
+SHORTS_RESOLUTION = (1080, 1920)
+SHORTS_TARGET_DURATION_SECONDS = int(os.getenv("SHORTS_TARGET_DURATION_SECONDS", "45"))
+SHORTS_MAX_DURATION_SECONDS = 58  # YouTube cuts off Shorts at 60s
+
+# --- YouTube Data API key (for stats monitoring — public read only) ------ #
+# Different from OAuth: this is a simple API key for reading public video
+# stats (views, likes, comments). Create at:
+#   https://console.cloud.google.com/apis/credentials
+#   -> Create Credentials -> API key
+# YouTube Data API v3 must be enabled (already done for upload OAuth).
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "").strip()
 
 # --- Resilience ---------------------------------------------------------- #
 MAX_VIDEO_RETRIES = int(os.getenv("MAX_VIDEO_RETRIES", "2"))

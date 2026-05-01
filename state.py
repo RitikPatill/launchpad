@@ -80,6 +80,21 @@ CREATE TABLE IF NOT EXISTS prompt_versions (
     applied_at  TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS video_stats (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    video_id    INTEGER NOT NULL,         -- FK to videos.id (our internal id)
+    yt_video_id TEXT NOT NULL,            -- YouTube's id (long-form OR short)
+    kind        TEXT NOT NULL,            -- 'long' | 'short'
+    ts          TEXT NOT NULL,
+    views       INTEGER,
+    likes       INTEGER,
+    comments    INTEGER,
+    favorites   INTEGER,
+    FOREIGN KEY (video_id) REFERENCES videos(id)
+);
+CREATE INDEX IF NOT EXISTS idx_video_stats_yt ON video_stats(yt_video_id);
+CREATE INDEX IF NOT EXISTS idx_video_stats_ts ON video_stats(ts);
+
 CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
 """
 
@@ -238,6 +253,38 @@ def record_prompt_edit(agent_name: str, diff: str, rationale: str) -> int:
             (agent_name, next_version, diff, rationale, _now()),
         )
         return next_version
+
+
+def record_video_stats(*, video_id: int, yt_video_id: str, kind: str,
+                        views: int | None, likes: int | None,
+                        comments: int | None, favorites: int | None = None) -> None:
+    """Time-series snapshot of one video's stats. Called by monitor.py."""
+    with connect() as con:
+        con.execute(
+            "INSERT INTO video_stats(video_id, yt_video_id, kind, ts, views, "
+            "likes, comments, favorites) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (video_id, yt_video_id, kind, _now(), views, likes, comments, favorites),
+        )
+
+
+def latest_stats_for(yt_video_id: str) -> dict | None:
+    with connect() as con:
+        row = con.execute(
+            "SELECT ts, views, likes, comments FROM video_stats "
+            "WHERE yt_video_id = ? ORDER BY ts DESC LIMIT 1",
+            (yt_video_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def last_monitor_run_at() -> datetime | None:
+    with connect() as con:
+        row = con.execute(
+            "SELECT MAX(ts) AS ts FROM video_stats"
+        ).fetchone()
+    if row and row["ts"]:
+        return datetime.fromisoformat(row["ts"])
+    return None
 
 
 def last_meta_run_at() -> datetime | None:
