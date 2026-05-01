@@ -35,7 +35,7 @@ import state
 import trigger
 import tts
 import uploader
-from agents import metadata, screenplay
+from agents import metadata, screenplay, thumbnail
 from config import (
     BASE_DIR,
     GITHUB_TOKEN,
@@ -110,17 +110,32 @@ def _step_rendering(v) -> None:
     sp = json.loads(v["script"])
     out_dir = RENDER_DIR / f"video-{v['id']}"
     audio_path = out_dir / "narration.mp3"
-    tts.synthesize_screenplay(sp, audio_path)
+    srt_path = out_dir / "captions.srt"
+    tts.synthesize_screenplay(sp, audio_path, srt_path)
     final_path = out_dir / "final.mp4"
     compositor.compose(
         video_in=Path(v["video_path"]),
         audio_in=audio_path,
         output_path=final_path,
     )
+    # Generate the thumbnail from a key frame of the recorded video.
+    thumb_path = out_dir / "thumbnail.jpg"
+    try:
+        thumbnail.compose_thumbnail(
+            video_path=Path(v["video_path"]),
+            title=v["title"], handle="@RitikPatill",
+            output_path=thumb_path,
+        )
+    except Exception as e:
+        state.log("WARN", "orchestrator", f"thumbnail compose failed: {e}")
+        thumb_path = None  # YouTube will use first frame as fallback
+
     state.update_video(
         v["id"], status="uploading",
         audio_path=str(audio_path),
         final_path=str(final_path),
+        srt_path=str(srt_path) if srt_path.exists() else None,
+        thumbnail_path=str(thumb_path) if thumb_path else None,
     )
 
 
@@ -130,17 +145,70 @@ def _step_uploading(v) -> None:
         video_path=Path(v["final_path"]),
         title=v["title"], description=v["description"], tags=tags,
     )
+    video_id = result["video_id"]
+    # Custom thumbnail (best-effort — needs verified channel).
+    if v["thumbnail_path"]:
+        try:
+            uploader.upload_thumbnail(
+                video_id=video_id,
+                thumbnail_path=Path(v["thumbnail_path"]),
+            )
+        except Exception as e:
+            state.log("WARN", "orchestrator", f"thumbnail upload skipped: {e}")
+    # Caption track in English (skip if SRT missing).
+    if v["srt_path"]:
+        try:
+            uploader.upload_caption(
+                video_id=video_id, srt_path=Path(v["srt_path"]),
+            )
+        except Exception as e:
+            state.log("WARN", "orchestrator", f"caption upload skipped: {e}")
     state.update_video(
         v["id"], status="uploaded",
-        youtube_video_id=result["video_id"],
+        youtube_video_id=video_id,
         youtube_url=result["url"],
         uploaded_at=datetime.now(timezone.utc).isoformat(),
     )
 
 
+def _cleanup_old_renders() -> None:
+    """Delete render dirs for videos uploaded more than 14 days ago.
+    Keeps disk usage bounded over a year of operation."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=14)
+    with state.connect() as con:
+        rows = list(con.execute(
+            "SELECT id, uploaded_at FROM videos WHERE status IN ('uploaded','embedded') "
+            "AND uploaded_at IS NOT NULL"
+        ))
+    for r in rows:
+        try:
+            ts = datetime.fromisoformat(r["uploaded_at"])
+        except Exception:
+            continue
+        if ts < cutoff:
+            d = RENDER_DIR / f"video-{r['id']}"
+            if d.exists():
+                import shutil
+                try:
+                    shutil.rmtree(d)
+                    state.log("INFO", "cleanup", f"removed render dir for video #{r['id']}")
+                except Exception:
+                    pass
+
+
 # --- Tick ---------------------------------------------------------------- #
 
+_TICK_COUNT = 0
+
+
 def tick() -> None:
+    global _TICK_COUNT
+    _TICK_COUNT += 1
+
+    # Phase 0 — periodic cleanup (every ~24h at our 30-min cadence).
+    if _TICK_COUNT % 48 == 0:
+        _cleanup_old_renders()
+
     # Phase 1 — discover newly-completed sibling projects.
     trigger.scan_all_siblings()
 

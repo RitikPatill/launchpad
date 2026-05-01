@@ -23,7 +23,10 @@ from config import (
 )
 
 
-SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+SCOPES = [
+    "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/youtube.force-ssl",  # captions + thumbnail
+]
 
 
 def authenticate_browser_flow() -> None:
@@ -109,3 +112,48 @@ def upload(*, video_path: Path, title: str, description: str,
     url = f"https://youtu.be/{video_id}"
     state.log("INFO", "uploader", f"uploaded: {url}")
     return {"video_id": video_id, "url": url}
+
+
+def upload_thumbnail(*, video_id: str, thumbnail_path: Path) -> None:
+    """Set a custom thumbnail. Requires the channel to be verified —
+    YouTube enables this once you've verified via phone."""
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaFileUpload
+
+    creds = _load_creds()
+    youtube = build("youtube", "v3", credentials=creds, cache_discovery=False)
+
+    media = MediaFileUpload(str(thumbnail_path), mimetype="image/jpeg")
+    try:
+        youtube.thumbnails().set(videoId=video_id, media_body=media).execute()
+        state.log("INFO", "uploader", f"thumbnail set on {video_id}")
+    except Exception as e:
+        # Common cause: channel not yet verified. Don't fail the whole
+        # upload over a missing thumbnail; YouTube uses the first frame.
+        state.log("WARN", "uploader",
+                  f"thumbnail upload failed (channel may need phone verification): {e}")
+
+
+def upload_caption(*, video_id: str, srt_path: Path,
+                   language: str = "en", name: str = "English") -> None:
+    """Attach an SRT caption track to the uploaded video."""
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaFileUpload
+
+    creds = _load_creds()
+    youtube = build("youtube", "v3", credentials=creds, cache_discovery=False)
+
+    body = {
+        "snippet": {
+            "videoId": video_id,
+            "language": language,
+            "name": name,
+            "isDraft": False,
+        }
+    }
+    media = MediaFileUpload(str(srt_path), mimetype="application/octet-stream")
+    try:
+        youtube.captions().insert(part="snippet", body=body, media_body=media).execute()
+        state.log("INFO", "uploader", f"caption uploaded for {video_id}")
+    except Exception as e:
+        state.log("WARN", "uploader", f"caption upload failed: {e}")

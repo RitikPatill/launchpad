@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS videos (
     final_path         TEXT,
     youtube_video_id   TEXT,
     youtube_url        TEXT,
+    thumbnail_path     TEXT,
+    srt_path           TEXT,
     duration_s         REAL,
     attempt_count      INTEGER DEFAULT 0,
     last_error         TEXT,
