@@ -88,17 +88,59 @@ DATA YOU CAN READ:
 
 YOUR THREE OUTPUTS:
 
-1. WEEKLY REPORT — write to launchpad/meta_reports/{today}.md:
-   - "Shipped this period": list of videos with view counts where
-     available, titles, durations.
-   - "Voice-over quality": is the scripting hooky? Too dry? Are the
-     openings weak? Are the AI-disclosure lines awkward?
-   - "Metadata quality": are titles getting clicks? Are tags reaching
-     the right audiences? Is the description structure working?
-   - "Thumbnail quality": readable at 320x180 (the small YouTube
-     suggested-video size)? Consistent channel branding?
-   - "Recommended changes": up to {max_edits} concrete prompt edits.
-   - "Edits applied": filled in after you make them.
+1. WEEKLY REPORT — write to launchpad/meta_reports/{today}.md.
+
+   Section A — SHIPPED THIS PERIOD: list of videos with view counts
+     where available, titles, durations.
+
+   Section B — CONTENT QUALITY:
+     * Voice-over: is the scripting hooky? Too dry? Are openings weak?
+       Are AI-disclosure lines awkward?
+     * Metadata: are titles getting clicks (high views, good like-ratio)?
+       Are tags reaching the right audiences?
+     * Thumbnail: readable at 320x180 (small YouTube suggested-video)?
+       Consistent channel branding?
+     * Shorts vs long-form: which is performing better? Are Shorts
+       getting the algorithmic boost we expected?
+
+   Section C — **CROSS-SYSTEM INTEGRATION AUDIT** (NEW — be paranoid here,
+     these are the gaps the user shouldn't have to spot for me):
+     * Are completed videos linked back from the SOURCE REPO's README?
+       Query: every videos row with status='uploaded' AND
+       source_orchestrator IN ('autodev','agent-radar') should also
+       have status='embedded' shortly after. If a video has been
+       'uploaded' for >24h without becoming 'embedded', the embedding
+       step is broken — flag it.
+     * For every project in autodev/agent-radar with status='done',
+       does a corresponding videos row exist? If not, why didn't the
+       trigger pick it up?
+     * Are there marketing drafts (autodev/drafts/, agent-radar/drafts/)
+       sitting unused for >7 days? The user has to manually post these
+       to LinkedIn — flag as "user reminder needed" in the report.
+     * For projects detected as Streamlit/Gradio, did HF Spaces deploy
+       succeed? Any 'failed_terminal' or stuck 'deploying' videos?
+     * Do the YouTube videos actually link to the GitHub repo and HF
+       Space in their descriptions?
+     * Is the orchestrator's tick log healthy or showing repeated
+       errors / rate-limit pauses?
+
+   Section D — RECOMMENDED CHANGES: up to {max_edits} concrete prompt
+     edits backed by evidence from B or C above.
+
+   Section E — EDITS APPLIED: filled in after you make them.
+
+   Section F — **CRITICAL GAPS REQUIRING NEW CODE** (NEW): if you
+     identify a workflow gap that needs a NEW module or NEW orchestrator
+     step (not just a prompt tweak), describe it here in detail —
+     the human will see this in the next session and either implement
+     it or ask Claude Code to. Examples of valid Section F entries:
+       - "Auto-detect when a project's HF Space goes 503 stale and
+          trigger a rebuild"
+       - "Add a screenshot generator that snapshots the deployed app
+          for the marketing drafts"
+       - "When YouTube engagement is low, regenerate thumbnail and
+          re-upload via thumbnails().set"
+     This is your way to escalate beyond your prompt-edit-only sandbox.
 
 2. PROMPT EDITS — at most {max_edits} files in launchpad/agents/*.py.
    Editable PROMPT-style constants: PROMPT, CANDIDATES_PROMPT,

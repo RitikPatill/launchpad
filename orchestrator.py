@@ -307,6 +307,107 @@ def _step_shorts_rendering(v) -> None:
                        short_path=str(final_short))
 
 
+def _step_embedding(v) -> None:
+    """
+    Cross-system integration: after both videos are live, update the
+    source project's README to include the YouTube walkthrough links,
+    commit, and push. Idempotent — re-runs are no-ops if links already
+    present.
+
+    Status flow: uploaded -> embedded (terminal success state).
+
+    For 'manual_test' source: skip the embed (no real source repo to
+    update). For autodev/agent-radar sources: locate the workspace,
+    edit README.md, commit directly to main with a conventional commit
+    message.
+    """
+    src = v["source_orchestrator"]
+    if src not in ("autodev", "agent-radar"):
+        state.update_video(v["id"], status="embedded")
+        return
+
+    workspace = _get_sibling_workspace(src, v["project_slug"])
+    if workspace is None or not workspace.exists():
+        state.log("WARN", "embedding",
+                  f"workspace missing for {v['project_slug']}, skipping")
+        state.update_video(v["id"], status="embedded")
+        return
+
+    readme = workspace / "README.md"
+    if not readme.exists():
+        state.log("WARN", "embedding",
+                  f"no README.md in workspace for {v['project_slug']}")
+        state.update_video(v["id"], status="embedded")
+        return
+
+    text = readme.read_text(encoding="utf-8")
+    long_url = v["youtube_url"] or ""
+    short_url = v["short_url"] or ""
+
+    # Idempotency: if the long-form URL is already in the README, skip.
+    if long_url and long_url in text:
+        state.log("INFO", "embedding",
+                  f"README already linked for {v['project_slug']}")
+        state.update_video(v["id"], status="embedded")
+        return
+
+    # Build the link block — placed right after the H1 title, set off as
+    # a blockquote so it visually stands out without looking marketing-y.
+    link_lines: list[str] = []
+    if long_url:
+        link_lines.append(f"> **Video walkthrough:** {long_url}")
+    if short_url:
+        link_lines.append(f"> **60-second overview:** {short_url}")
+    if not link_lines:
+        state.update_video(v["id"], status="embedded")
+        return
+    link_block = "\n".join(link_lines)
+
+    # Insert position: after first H1 line, skipping any immediately-
+    # following blank lines so we land in a clean spot.
+    lines = text.splitlines()
+    insert_at = 0
+    for i, line in enumerate(lines):
+        if line.startswith("# "):
+            insert_at = i + 1
+            break
+    while insert_at < len(lines) and not lines[insert_at].strip():
+        insert_at += 1
+
+    new_lines = lines[:insert_at] + ["", link_block, ""] + lines[insert_at:]
+    new_text = "\n".join(new_lines).rstrip() + "\n"
+    readme.write_text(new_text, encoding="utf-8")
+
+    # Commit + push directly to main. This is a docs-only update to a
+    # completed project; bypassing the branch+PR flow is fine.
+    import subprocess
+
+    def _git(args, check=False):
+        return subprocess.run(
+            ["git", *args], cwd=str(workspace),
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            check=check,
+        )
+
+    try:
+        _git(["checkout", "main"])
+        _git(["pull", "--ff-only", "origin", "main"])
+        _git(["add", "README.md"])
+        cp = _git(["commit", "-m", "docs: add youtube walkthrough link"])
+        if cp.returncode == 0:
+            push = _git(["push", "origin", "main"])
+            if push.returncode == 0:
+                state.log("INFO", "embedding",
+                          f"linked YouTube to {v['project_slug']} README")
+            else:
+                state.log("WARN", "embedding",
+                          f"push failed for {v['project_slug']}: {push.stderr[-200:]}")
+    except Exception as e:
+        state.log("ERROR", "embedding", f"git push failed: {e}")
+
+    state.update_video(v["id"], status="embedded")
+
+
 def _step_shorts_uploading(v) -> None:
     """Upload the polished Short as a separate video. Failures here mark
     the main video 'uploaded' regardless — Shorts are a bonus."""
@@ -335,6 +436,11 @@ def _step_shorts_uploading(v) -> None:
     except Exception as e:
         state.log("WARN", "orchestrator", f"shorts upload failed (long-form live): {e}")
         state.update_video(v["id"], status="uploaded")
+    # Always advance from 'uploaded' to embed step so the source repo
+    # README gets the YouTube link backlink even if Shorts upload failed.
+    v_now = state.get_video(v["id"])
+    if v_now["status"] == "uploaded":
+        state.update_video(v["id"], status="embedding")
 
 
 def _cleanup_old_renders() -> None:
@@ -384,6 +490,7 @@ def tick() -> None:
         "uploading",
         "shorts_scripting", "shorts_recording", "shorts_rendering",
         "shorts_uploading",
+        "embedding",
     )
     for status_to_drive in PIPELINE:
         v = state.next_video_in_status(status_to_drive)
@@ -424,6 +531,8 @@ def tick() -> None:
                 _step_shorts_rendering(v)
             elif status_to_drive == "shorts_uploading":
                 _step_shorts_uploading(v)
+            elif status_to_drive == "embedding":
+                _step_embedding(v)
         except claude_cli.RateLimited as e:
             state.log("WARN", "orchestrator", str(e))
         except Exception as e:
