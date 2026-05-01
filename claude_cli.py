@@ -147,19 +147,22 @@ def call_claude(
 
 # --- helpers --------------------------------------------------------------- #
 
-_FENCED_JSON = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
-_BARE_JSON = re.compile(r"(\{.*\})", re.DOTALL)
+_FENCED_OBJ = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+_FENCED_ARR = re.compile(r"```(?:json)?\s*(\[.*?\])\s*```", re.DOTALL)
+_BARE_OBJ = re.compile(r"(\{.*\})", re.DOTALL)
+_BARE_ARR = re.compile(r"(\[.*\])", re.DOTALL)
 
 
-def extract_json(text: str) -> dict[str, Any]:
+def extract_json(text: str) -> Any:
     """
-    Pull the first JSON object out of a Claude response. Models love wrapping
-    JSON in ```json fences; we tolerate either fenced or bare.
+    Pull the first JSON value (object OR array) out of a Claude response.
+    Tolerates fenced or bare. Returns whatever the JSON parses as.
     """
-    m = _FENCED_JSON.search(text)
-    if m:
-        return json.loads(m.group(1))
-    m = _BARE_JSON.search(text)
-    if m:
-        return json.loads(m.group(1))
-    raise ClaudeError(f"no JSON object found in response: {text[:300]}")
+    for pattern in (_FENCED_OBJ, _FENCED_ARR, _BARE_OBJ, _BARE_ARR):
+        m = pattern.search(text)
+        if m:
+            try:
+                return json.loads(m.group(1))
+            except json.JSONDecodeError:
+                continue
+    raise ClaudeError(f"no JSON value found in response: {text[:300]}")

@@ -35,7 +35,7 @@ import state
 import trigger
 import tts
 import uploader
-from agents import metadata, screenplay, thumbnail
+from agents import metadata, meta_improver, screenplay, thumbnail
 from config import (
     BASE_DIR,
     GITHUB_TOKEN,
@@ -287,6 +287,19 @@ def _preflight_ok(*, require_yt: bool = False) -> bool:
     return True
 
 
+def _maybe_run_meta() -> None:
+    """Run the Opus weekly meta-improver if 144h have passed since last run."""
+    last = state.last_meta_run_at()
+    if last:
+        gap_h = (datetime.now(timezone.utc) - last).total_seconds() / 3600
+        if gap_h < 144:  # 6 days
+            return
+    try:
+        meta_improver.run_meta_review()
+    except Exception as e:
+        state.log("ERROR", "orchestrator", f"meta-improver failed: {e}")
+
+
 def run_forever() -> None:
     state.init_db()
     state.log("INFO", "orchestrator", f"launchpad starting (pid={os.getpid()})")
@@ -296,6 +309,7 @@ def run_forever() -> None:
     while True:
         try:
             tick()
+            _maybe_run_meta()
         except Exception:
             state.log("ERROR", "orchestrator",
                       f"unhandled tick error:\n{traceback.format_exc()}")
@@ -328,7 +342,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="launchpad — autonomous YouTube agent")
     parser.add_argument("command", nargs="?", default="run",
                         choices=["run", "tick", "scan", "auth", "preflight",
-                                 "status", "health"])
+                                 "status", "health", "meta", "force_test"])
     args = parser.parse_args()
     state.init_db()
 
@@ -347,6 +361,24 @@ def main() -> None:
         _print_status()
     elif args.command == "health":
         _print_health()
+    elif args.command == "meta":
+        meta_improver.run_meta_review()
+    elif args.command == "force_test":
+        # One-off: queue a video for autodev itself (the orchestrator
+        # repo) so we can verify pipeline output before any real
+        # generated project completes. Bypasses the trigger.
+        new_id = state.queue_video(
+            source_orchestrator="manual_test",
+            project_slug="autodev",
+            project_title="autodev",
+            project_description="Autonomous multi-agent orchestrator that scouts trending AI/ML topics, picks one, breaks it into milestones, and ships a working GitHub project at human pace via PRs. Self-improving via daily Opus meta-reviewer with eval gating.",
+            project_repo_url="https://github.com/RitikPatill/autodev",
+            project_pages_url=None,
+        )
+        if new_id:
+            print(f"queued test video #{new_id} for autodev")
+        else:
+            print("test video already queued earlier")
 
 
 if __name__ == "__main__":

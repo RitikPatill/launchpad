@@ -71,6 +71,15 @@ CREATE TABLE IF NOT EXISTS log (
     message     TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS prompt_versions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_name  TEXT NOT NULL,
+    version     INTEGER NOT NULL,
+    diff        TEXT NOT NULL,
+    rationale   TEXT,
+    applied_at  TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
 """
 
@@ -91,9 +100,20 @@ def connect():
         con.close()
 
 
+_MIGRATIONS = [
+    "ALTER TABLE videos ADD COLUMN srt_path TEXT",
+    "ALTER TABLE videos ADD COLUMN thumbnail_path TEXT",
+]
+
+
 def init_db() -> None:
     with connect() as con:
         con.executescript(SCHEMA)
+        for stmt in _MIGRATIONS:
+            try:
+                con.execute(stmt)
+            except sqlite3.OperationalError:
+                pass  # already applied
 
 
 def log(level: str, component: str, message: str) -> None:
@@ -197,3 +217,30 @@ def claude_calls_in_window(hours: int = 5) -> int:
             "SELECT COUNT(*) AS n FROM claude_calls WHERE ts >= ?", (cutoff,),
         ).fetchone()
         return row["n"]
+
+
+# --- Improver bookkeeping (Opus meta-improver records its edits here) --- #
+
+def record_prompt_edit(agent_name: str, diff: str, rationale: str) -> int:
+    with connect() as con:
+        row = con.execute(
+            "SELECT MAX(version) AS v FROM prompt_versions WHERE agent_name = ?",
+            (agent_name,),
+        ).fetchone()
+        next_version = (row["v"] or 0) + 1
+        con.execute(
+            "INSERT INTO prompt_versions(agent_name, version, diff, rationale, applied_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (agent_name, next_version, diff, rationale, _now()),
+        )
+        return next_version
+
+
+def last_meta_run_at() -> datetime | None:
+    with connect() as con:
+        row = con.execute(
+            "SELECT MAX(ts) AS ts FROM claude_calls WHERE component = 'meta_improver'"
+        ).fetchone()
+    if row and row["ts"]:
+        return datetime.fromisoformat(row["ts"])
+    return None
