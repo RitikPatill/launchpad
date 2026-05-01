@@ -35,7 +35,7 @@ import state
 import trigger
 import tts
 import uploader
-from agents import metadata, meta_improver, screenplay, thumbnail
+from agents import editor, metadata, meta_improver, screenplay, thumbnail
 from config import (
     BASE_DIR,
     GITHUB_TOKEN,
@@ -112,13 +112,28 @@ def _step_rendering(v) -> None:
     audio_path = out_dir / "narration.mp3"
     srt_path = out_dir / "captions.srt"
     tts.synthesize_screenplay(sp, audio_path, srt_path)
-    final_path = out_dir / "final.mp4"
+    raw_final = out_dir / "raw_final.mp4"
     compositor.compose(
         video_in=Path(v["video_path"]),
         audio_in=audio_path,
-        output_path=final_path,
+        output_path=raw_final,
     )
-    # Generate the thumbnail from a key frame of the recorded video.
+    # Polish: intro card + outro card + burned-in captions.
+    final_path = out_dir / "final.mp4"
+    try:
+        editor.polish_video(
+            main_video=raw_final,
+            srt=srt_path if srt_path.exists() else None,
+            project_title=v["project_title"] or v["title"],
+            handle="@RitikPatill",
+            output_path=final_path,
+        )
+    except Exception as e:
+        state.log("WARN", "orchestrator", f"polish failed, shipping raw: {e}")
+        import shutil
+        shutil.copyfile(raw_final, final_path)
+    # Generate the thumbnail from a key frame of the RAW recording (before
+    # the intro card was prepended) so we get a real product shot.
     thumb_path = out_dir / "thumbnail.jpg"
     try:
         thumbnail.compose_thumbnail(
@@ -128,7 +143,7 @@ def _step_rendering(v) -> None:
         )
     except Exception as e:
         state.log("WARN", "orchestrator", f"thumbnail compose failed: {e}")
-        thumb_path = None  # YouTube will use first frame as fallback
+        thumb_path = None
 
     state.update_video(
         v["id"], status="uploading",

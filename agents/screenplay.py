@@ -50,10 +50,14 @@ VIDEO STRUCTURE — 4-6 scenes:
                      section. Voice explains the key technical choices.
   scene 3 (10-15s) — scroll to the Quickstart section, narrate how to
                      run it.
-  scene 4 (10-15s, OPTIONAL — only if PAGES URL is present and looks
-                     like a deployed demo URL): goto pages_url, narrate
-                     "and here's it running live". Wait 3-4s on the
-                     loaded page.
+  scene 4 (15-25s, REQUIRED if PAGES URL is set, OPTIONAL otherwise) —
+                     goto pages_url, narrate "and here's it running
+                     live". This is the demo scene — viewers care about
+                     seeing the actual product, not just code. Wait 4-6s
+                     on the loaded page so viewers can see it. If the
+                     page has interactive elements, scroll or wait for
+                     them to render. SKIP this scene only if pages_url
+                     is None or "(none)".
   final scene (5-10s) — back to repo, wrap up, mention author handle
                      (RitikPatill), close.
 

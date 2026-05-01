@@ -77,10 +77,54 @@ def _boundaries_to_srt(boundaries: list[dict],
     return "\n".join(cues)
 
 
+def _audio_duration_seconds(audio_path: Path) -> float:
+    """Probe the MP3 we just wrote to get its duration. Used for the
+    fallback SRT generator when Edge TTS doesn't emit word boundaries."""
+    import subprocess
+    import imageio_ffmpeg
+    proc = subprocess.run(
+        [imageio_ffmpeg.get_ffmpeg_exe(), "-i", str(audio_path)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    for line in proc.stderr.splitlines():
+        line = line.strip()
+        if line.startswith("Duration:"):
+            spec = line.split("Duration:", 1)[1].split(",", 1)[0].strip()
+            h, m, s = spec.split(":")
+            return int(h) * 3600 + int(m) * 60 + float(s)
+    return 0.0
+
+
+def _fallback_srt_from_text(text: str, total_seconds: float,
+                            words_per_cue: int = 7) -> str:
+    """
+    When Edge TTS doesn't return word-boundary events, evenly time-split
+    the script across the audio duration. Cruder timing but ensures we
+    always ship some captions.
+    """
+    words = text.split()
+    if not words or total_seconds <= 0:
+        return ""
+    per_word_ms = (total_seconds * 1000.0) / len(words)
+    cues: list[str] = []
+    for i in range(0, len(words), words_per_cue):
+        group = words[i:i + words_per_cue]
+        start_ms = int(i * per_word_ms)
+        end_ms = int(min(len(words), i + words_per_cue) * per_word_ms)
+        idx = (i // words_per_cue) + 1
+        cues.append(
+            f"{idx}\n"
+            f"{_format_srt_time(start_ms)} --> {_format_srt_time(end_ms)}\n"
+            f"{' '.join(group)}\n"
+        )
+    return "\n".join(cues)
+
+
 def synthesize_screenplay(screenplay: dict, audio_path: Path,
                           srt_path: Path | None = None) -> tuple[Path, Path | None]:
     """
-    Concat all scene voice-over lines, synthesize audio, optionally write SRT.
+    Concat all scene voice-over lines, synthesize audio, write SRT.
+    Falls back to even time-split if Edge TTS doesn't emit word boundaries.
     Returns (audio_path, srt_path_or_None).
     """
     parts: list[str] = []
@@ -91,8 +135,17 @@ def synthesize_screenplay(screenplay: dict, audio_path: Path,
     text = "\n\n".join(parts)
 
     boundaries = asyncio.run(_synthesize_async(text, audio_path))
-    if srt_path is not None and boundaries:
-        srt_path.parent.mkdir(parents=True, exist_ok=True)
+    if srt_path is None:
+        return audio_path, None
+
+    srt_path.parent.mkdir(parents=True, exist_ok=True)
+    if boundaries:
         srt_path.write_text(_boundaries_to_srt(boundaries), encoding="utf-8")
-        return audio_path, srt_path
-    return audio_path, None
+    else:
+        # Fallback: even time-split based on actual audio duration.
+        duration = _audio_duration_seconds(audio_path)
+        srt_text = _fallback_srt_from_text(text, duration)
+        if not srt_text:
+            return audio_path, None
+        srt_path.write_text(srt_text, encoding="utf-8")
+    return audio_path, srt_path

@@ -80,12 +80,19 @@ YT_DEFAULT_LANGUAGE = os.getenv("YT_DEFAULT_LANGUAGE", "en")
 YT_DECLARE_ALTERED = True
 
 # --- TTS config ---------------------------------------------------------- #
-# Microsoft Edge TTS voices, English. en-US-GuyNeural and en-US-AriaNeural
-# are widely-tested and sound natural. Pick one consistent across videos
-# so viewers recognize the channel voice.
-TTS_VOICE = os.getenv("TTS_VOICE", "en-US-GuyNeural")
-TTS_RATE = os.getenv("TTS_RATE", "+0%")     # speaking speed
-TTS_PITCH = os.getenv("TTS_PITCH", "+0Hz")  # pitch shift
+# Microsoft Edge TTS voices, free for personal + commercial use.
+# After 2026 community testing, Multilingual Neural voices sound notably
+# more natural than the original Neural voices. Defaults below picked for
+# minimum robotic feel:
+#   en-US-EmmaMultilingualNeural — clear, warm, technical-content friendly
+#   en-US-AndrewMultilingualNeural — male alternative
+#   en-GB-RyanNeural — community pick for "least robotic"
+TTS_VOICE = os.getenv("TTS_VOICE", "en-US-EmmaMultilingualNeural")
+TTS_RATE = os.getenv("TTS_RATE", "-5%")      # slightly slower than default - more natural
+TTS_PITCH = os.getenv("TTS_PITCH", "+0Hz")
+# Backend: "edge" (free, default) | "kokoro" (free local, more natural,
+# requires `pip install kokoro` and ~100MB model download).
+TTS_BACKEND = os.getenv("TTS_BACKEND", "edge")
 
 # --- Pacing -------------------------------------------------------------- #
 # Realistic uploads per week. YouTube's spam detection penalizes bursts.
