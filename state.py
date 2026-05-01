@@ -103,6 +103,10 @@ def connect():
 _MIGRATIONS = [
     "ALTER TABLE videos ADD COLUMN srt_path TEXT",
     "ALTER TABLE videos ADD COLUMN thumbnail_path TEXT",
+    "ALTER TABLE videos ADD COLUMN short_path TEXT",
+    "ALTER TABLE videos ADD COLUMN short_video_id TEXT",
+    "ALTER TABLE videos ADD COLUMN short_url TEXT",
+    "ALTER TABLE videos ADD COLUMN deploy_url TEXT",
 ]
 
 

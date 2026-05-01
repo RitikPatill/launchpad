@@ -135,6 +135,41 @@ def _card_to_clip(card_path: Path, out_clip: Path, duration_s: float = 2.0,
     return out_clip
 
 
+def make_short(*, source_long_video: Path, output_path: Path,
+               max_seconds: int = 55) -> Path:
+    """
+    Generate a YouTube Shorts variant from the long-form video:
+      - crop horizontal 16:9 -> vertical 9:16 (1080x1920)
+      - trim to max_seconds (Shorts must be < 60s)
+      - center-crop horizontally so the focal subject (usually middle of
+        the page) stays in frame
+
+    YouTube auto-detects vertical + duration < 60s and routes the upload
+    to the Shorts shelf. We additionally tag the title/description with
+    "#Shorts" at the upload step.
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        _ffmpeg(), "-y",
+        "-i", str(source_long_video),
+        "-t", str(max_seconds),
+        # Center-crop the source to a 9:16 aspect, then scale to 1080x1920.
+        # `crop=ih*9/16:ih` keeps full height, takes a centered slice the
+        # right width. Then scale ensures clean 1080p vertical.
+        "-vf", "crop=ih*9/16:ih,scale=1080:1920",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+        "-c:a", "aac", "-b:a", "128k",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        str(output_path),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace")
+    if proc.returncode != 0 or not output_path.exists():
+        raise RuntimeError(f"ffmpeg make_short failed: {proc.stderr[-500:]}")
+    return output_path
+
+
 def polish_video(*, main_video: Path, srt: Path | None,
                  project_title: str, handle: str,
                  output_path: Path) -> Path:

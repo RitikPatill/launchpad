@@ -30,6 +30,7 @@ from pathlib import Path
 
 import claude_cli
 import compositor
+import deployer
 import recorder
 import state
 import trigger
@@ -77,6 +78,58 @@ def _can_upload_now() -> tuple[bool, str]:
 
 
 # --- Step drivers -------------------------------------------------------- #
+
+def _get_sibling_workspace(source_orchestrator: str, project_slug: str) -> Path | None:
+    """Look up the project's local clone path in the sibling orchestrator's DB."""
+    import sqlite3
+    from config import AGENT_RADAR_DB, AUTODEV_DB
+    db = {"autodev": AUTODEV_DB, "agent-radar": AGENT_RADAR_DB}.get(source_orchestrator)
+    if not db or not db.exists():
+        return None
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    con.row_factory = sqlite3.Row
+    try:
+        row = con.execute(
+            "SELECT workspace_path FROM projects WHERE slug = ?", (project_slug,),
+        ).fetchone()
+    finally:
+        con.close()
+    return Path(row["workspace_path"]) if row and row["workspace_path"] else None
+
+
+def _step_deploying(v) -> None:
+    """
+    Try to auto-deploy the project to HuggingFace Spaces so the video
+    can show a real live demo. If the project isn't deployable
+    (Streamlit/Gradio/static), or HF auth missing, advance to scripting
+    anyway with no demo URL — the recorder will fall back to repo
+    walkthrough.
+    """
+    workspace = _get_sibling_workspace(v["source_orchestrator"], v["project_slug"])
+    if workspace is None:
+        # manual_test or workspace missing — skip deploy gracefully.
+        state.update_video(v["id"], status="scripting")
+        return
+
+    deploy_url: str | None = None
+    try:
+        deploy_url = deployer.deploy_project(
+            workspace=workspace,
+            slug=v["project_slug"],
+            project_title=v["project_title"],
+            project_description=v["project_description"],
+        )
+    except deployer.DeployError as e:
+        state.log("WARN", "orchestrator", f"HF deploy skipped: {e}")
+    except Exception as e:
+        state.log("WARN", "orchestrator", f"HF deploy errored: {e}")
+
+    fields: dict[str, object] = {"status": "scripting"}
+    if deploy_url:
+        fields["deploy_url"] = deploy_url
+        fields["project_pages_url"] = deploy_url
+    state.update_video(v["id"], **fields)
+
 
 def _step_scripting(v) -> None:
     sp = screenplay.write_screenplay(
@@ -179,11 +232,52 @@ def _step_uploading(v) -> None:
         except Exception as e:
             state.log("WARN", "orchestrator", f"caption upload skipped: {e}")
     state.update_video(
-        v["id"], status="uploaded",
+        v["id"], status="shorting",
         youtube_video_id=video_id,
         youtube_url=result["url"],
         uploaded_at=datetime.now(timezone.utc).isoformat(),
     )
+
+
+def _step_shorting(v) -> None:
+    """
+    Generate a YouTube Shorts variant by cropping/trimming the long-form
+    video, then upload as a separate video tagged #Shorts. If anything
+    fails, mark the main video 'uploaded' anyway — Shorts are a bonus,
+    not a requirement.
+    """
+    final_path = Path(v["final_path"])
+    short_path = final_path.parent / "short.mp4"
+    try:
+        editor.make_short(source_long_video=final_path, output_path=short_path)
+    except Exception as e:
+        state.log("WARN", "orchestrator", f"shorts gen failed: {e}")
+        state.update_video(v["id"], status="uploaded")
+        return
+
+    short_title = ((v["title"] or "")[:60] + " #Shorts")[:100]
+    short_desc = (
+        (v["description"] or "")[:900]
+        + "\n\n#Shorts — full walkthrough: " + (v["youtube_url"] or "")
+    )
+    tags_full = (json.loads(v["tags"]) if v["tags"] else [])[:8] + ["shorts"]
+
+    try:
+        result = uploader.upload(
+            video_path=short_path,
+            title=short_title,
+            description=short_desc,
+            tags=tags_full,
+        )
+        state.update_video(
+            v["id"], status="uploaded",
+            short_path=str(short_path),
+            short_video_id=result["video_id"],
+            short_url=result["url"],
+        )
+    except Exception as e:
+        state.log("WARN", "orchestrator", f"shorts upload failed (long-form is live): {e}")
+        state.update_video(v["id"], status="uploaded", short_path=str(short_path))
 
 
 def _cleanup_old_renders() -> None:
@@ -228,27 +322,33 @@ def tick() -> None:
     trigger.scan_all_siblings()
 
     # Phase 2 — drive the oldest in-flight video forward.
-    for status_to_drive in ("queued", "scripting", "recording", "rendering", "uploading"):
+    for status_to_drive in ("queued", "deploying", "scripting", "recording",
+                            "rendering", "uploading", "shorting"):
         v = state.next_video_in_status(status_to_drive)
         if not v:
             continue
 
         # Mark the kickoff transition for "queued" so we don't pick it
-        # twice across overlapping ticks.
+        # twice across overlapping ticks. Goes to deploying first.
         if status_to_drive == "queued":
-            state.update_video(v["id"], status="scripting")
+            state.update_video(v["id"], status="deploying")
             v = state.get_video(v["id"])
-            status_to_drive = "scripting"
+            status_to_drive = "deploying"
 
-        # Upload step is the only one gated by pacing rules.
-        if status_to_drive == "uploading":
+        # Upload step is gated by pacing rules. Shorting reuses the same
+        # gate (don't double-publish in a 5-min window even if main was
+        # within the cap).
+        if status_to_drive in ("uploading", "shorting"):
             ok, reason = _can_upload_now()
             if not ok:
-                state.log("INFO", "orchestrator", f"video #{v['id']} ready, holding upload — {reason}")
+                state.log("INFO", "orchestrator",
+                          f"video #{v['id']} {status_to_drive} held — {reason}")
                 return
 
         try:
-            if status_to_drive == "scripting":
+            if status_to_drive == "deploying":
+                _step_deploying(v)
+            elif status_to_drive == "scripting":
                 _step_scripting(v)
             elif status_to_drive == "recording":
                 _step_recording(v)
@@ -256,6 +356,8 @@ def tick() -> None:
                 _step_rendering(v)
             elif status_to_drive == "uploading":
                 _step_uploading(v)
+            elif status_to_drive == "shorting":
+                _step_shorting(v)
         except claude_cli.RateLimited as e:
             state.log("WARN", "orchestrator", str(e))
         except Exception as e:
