@@ -918,51 +918,55 @@ def _preflight_ok(*, require_yt: bool = False) -> bool:
 
 
 def _maybe_backfill_thumbnails() -> None:
-    """Thumbnails under YouTube's per-channel thumbnail rate limit.
-    Priority 1: NEW videos whose thumbnail was refused (thumb_pending).
-    Priority 2: trickle the redesigned thumbnails onto the back catalogue -
-    only when no long-form is in flight (it will need the allowance), at most
-    every 6 h, stopping at the first refusal and backing off 24 h."""
+    """Custom thumbnails under YouTube's per-channel thumbnail rate limit.
+    1) NEW videos whose thumbnail was refused (thumb_pending): retried every
+       3 h, always first.
+    2) Back catalogue: at most BACKFILL_PER_DAY per 24 h, only OUTSIDE the
+       upload window (so a new upload always finds allowance left), stopping
+       at the first refusal."""
     from config import LOCAL_HOME
     base = LOCAL_HOME / "backfill_thumbs"
     base.mkdir(parents=True, exist_ok=True)
-    marker = base / ".last_try"
-    backoff_h = 24 if (base / ".rate_limited").exists() else 6
-    if marker.exists() and time.time() - marker.stat().st_mtime < backoff_h * 3600:
-        return
-    marker.write_text(datetime.now(timezone.utc).isoformat(), encoding="utf-8")
-    (base / ".rate_limited").unlink(missing_ok=True)
+
+    def due(marker: Path, hours: float) -> bool:
+        return not marker.exists() or time.time() - marker.stat().st_mtime >= hours * 3600
+
+    pend_marker, back_marker = base / ".last_pending_try", base / ".last_backfill"
+    if due(pend_marker, 3):
+        with state.connect() as con:
+            pending = list(con.execute(
+                "SELECT id, youtube_video_id, thumbnail_path FROM videos WHERE thumb_pending = 1 "
+                "AND youtube_video_id IS NOT NULL AND thumbnail_path IS NOT NULL ORDER BY id"))
+        if pending:
+            pend_marker.write_text(datetime.now(timezone.utc).isoformat(), encoding="utf-8")
+        for r in pending:
+            if not Path(r["thumbnail_path"]).exists():
+                state.update_video(r["id"], thumb_pending=0)
+                continue
+            if uploader.upload_thumbnail(video_id=r["youtube_video_id"], thumbnail_path=Path(r["thumbnail_path"])):
+                state.update_video(r["id"], thumb_pending=0)
+                state.log("INFO", "orchestrator", f"pending thumbnail applied for #{r['id']}")
+            else:
+                return                      # still rate-limited; the back catalogue waits too
     with state.connect() as con:
-        pending = list(con.execute(
-            "SELECT id, youtube_video_id, thumbnail_path FROM videos WHERE thumb_pending = 1 "
-            "AND youtube_video_id IS NOT NULL AND thumbnail_path IS NOT NULL ORDER BY id"))
-        in_flight = con.execute(
-            "SELECT COUNT(*) FROM videos WHERE status IN ('scripting','recording','rendering','uploading') "
-            "AND youtube_video_id IS NULL").fetchone()[0]
-    for r in pending:
-        if not Path(r["thumbnail_path"]).exists():
-            state.update_video(r["id"], thumb_pending=0)
-            continue
-        if uploader.upload_thumbnail(video_id=r["youtube_video_id"], thumbnail_path=Path(r["thumbnail_path"])):
-            state.update_video(r["id"], thumb_pending=0)
-        else:
-            (base / ".rate_limited").write_text("1")
-            return
-    if pending or in_flight or not (base / "RENDERED").exists() or (base / "APPLIED_ALL").exists():
+        still_pending = con.execute("SELECT COUNT(*) FROM videos WHERE thumb_pending = 1").fetchone()[0]
+    if (still_pending or _is_upload_window() or not due(back_marker, 24)
+            or not (base / "RENDERED").exists() or (base / "APPLIED_ALL").exists()):
         return
+    back_marker.write_text(datetime.now(timezone.utc).isoformat(), encoding="utf-8")
     try:
         import importlib.util
         spec = importlib.util.spec_from_file_location(
             "backfill_thumbnails", BASE_DIR / "tools" / "backfill_thumbnails.py")
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        n = mod.apply(max_n=6)
-        if n:
-            state.log("INFO", "orchestrator", f"thumbnail backfill: applied {n} more")
-        if n < 6 and not (base / "APPLIED_ALL").exists():
-            (base / ".rate_limited").write_text("1")   # refused early: wait 24 h
+        n = mod.apply(max_n=BACKFILL_PER_DAY)
+        state.log("INFO", "orchestrator", f"thumbnail backfill: applied {n} today")
     except Exception as e:
         state.log("WARN", "orchestrator", f"thumbnail backfill error: {e}")
+
+
+BACKFILL_PER_DAY = 4
 
 
 def _maybe_run_meta() -> None:
