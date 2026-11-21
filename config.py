@@ -30,7 +30,6 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent
-load_dotenv(BASE_DIR / ".env")
 
 # --- Local-only home (NOT on OneDrive) ----------------------------------- #
 if platform.system() == "Windows":
@@ -39,13 +38,37 @@ else:
     _APPDATA = Path(os.getenv("XDG_DATA_HOME", str(Path.home() / ".local" / "share")))
 LOCAL_HOME = Path(os.getenv("LAUNCHPAD_LOCAL_HOME", str(_APPDATA / "launchpad")))
 
+# .env loading: prefer the secure local-only path so the GitHub PAT never
+# sits in a OneDrive-synced directory. Falls back to BASE_DIR for legacy.
+_secure_env = LOCAL_HOME / ".env"
+if _secure_env.exists():
+    load_dotenv(_secure_env)
+else:
+    load_dotenv(BASE_DIR / ".env")
+
 # --- GitHub --------------------------------------------------------------- #
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
 
-# --- Models (Sonnet only) ------------------------------------------------- #
-BUILDER_MODEL = os.getenv("BUILDER_MODEL", "claude-sonnet-4-6")
-CLAUDE_MODEL = BUILDER_MODEL
-CLAUDE_BIN = os.getenv("CLAUDE_BIN", "claude")
+# --- Models -------------------------------------------------------------- #
+# Owner's call (2026-11-20): squeeze maximum quality out of the Max plan for
+# launchpad. Creative and judgment roles (storyboard, hooks, titles,
+# thumbnail concepts, critic) use the most capable model; routine roles use
+# Opus. Every call falls down FALLBACK_MODELS on rate limits / overload, so
+# the pipeline never stops ("orchestra must never stop").
+MODEL_CREATIVE = os.getenv("LP_MODEL_CREATIVE", "claude-fable-5-2")
+MODEL_STANDARD = os.getenv("LP_MODEL_STANDARD", "claude-opus-5-5")
+EFFORT_CREATIVE = os.getenv("LP_EFFORT_CREATIVE", "high")
+CLAUDE_MODEL = MODEL_STANDARD            # default when a caller picks no role
+BUILDER_MODEL = CLAUDE_MODEL             # back-compat alias
+FALLBACK_MODELS = [m.strip() for m in os.getenv(
+    "LP_FALLBACK_MODELS", "claude-opus-5-5,claude-sonnet-5-5").split(",") if m.strip()]
+FALLBACK_MODEL = FALLBACK_MODELS[-1]     # back-compat alias
+# launchpad's PRIVATE Claude Code CLI. The shared global `claude` (2.1.68)
+# is too old for current models but autodev/agent-radar depend on it, so
+# launchpad keeps its own copy under LOCAL_HOME and auto-updates it.
+PRIVATE_CLAUDE_DIR = LOCAL_HOME / "claude-cli"
+PRIVATE_CLAUDE = PRIVATE_CLAUDE_DIR / "node_modules" / ".bin" / "claude.cmd"
+CLAUDE_BIN = os.getenv("CLAUDE_BIN", str(PRIVATE_CLAUDE) if PRIVATE_CLAUDE.exists() else "claude")
 CLAUDE_CALL_TIMEOUT_SECONDS = int(os.getenv("CLAUDE_CALL_TIMEOUT_SECONDS", "1200"))
 
 # --- Paths --------------------------------------------------------------- #
@@ -90,9 +113,15 @@ YT_DECLARE_ALTERED = True
 TTS_VOICE = os.getenv("TTS_VOICE", "en-US-EmmaMultilingualNeural")
 TTS_RATE = os.getenv("TTS_RATE", "-5%")      # slightly slower than default - more natural
 TTS_PITCH = os.getenv("TTS_PITCH", "+0Hz")
-# Backend: "edge" (free, default) | "kokoro" (free local, more natural,
-# requires `pip install kokoro` and ~100MB model download).
+# Engine order for tts.py's never-fail chain: the chosen backend first,
+# then the others ("edge" -> "kokoro" -> "sapi").
 TTS_BACKEND = os.getenv("TTS_BACKEND", "edge")
+# Local fallback voice (Kokoro-82M) lives in an isolated venv so its deps
+# never touch the shared Python install used by the other agents.
+TTS_VENV_PY = LOCAL_HOME / "tts-venv" / "Scripts" / "python.exe"
+KOKORO_MODEL_DIR = LOCAL_HOME / "models" / "kokoro"
+TTS_LOCAL_VOICE = os.getenv("TTS_LOCAL_VOICE", "af_heart")
+TTS_LOCAL_SPEED = float(os.getenv("TTS_LOCAL_SPEED", "1.0"))
 
 # --- Pacing -------------------------------------------------------------- #
 # Realistic uploads per week. YouTube's spam detection penalizes bursts.
@@ -122,3 +151,21 @@ YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "").strip()
 
 # --- Resilience ---------------------------------------------------------- #
 MAX_VIDEO_RETRIES = int(os.getenv("MAX_VIDEO_RETRIES", "2"))
+# A failed_terminal video is revived at the stage it died after this
+# cooldown, up to MAX_REVIVES times, so a temporary outage (TTS, network,
+# quota) can never permanently lose a video again.
+REVIVE_AFTER_HOURS = int(os.getenv("REVIVE_AFTER_HOURS", "24"))
+MAX_REVIVES = int(os.getenv("MAX_REVIVES", "3"))
+# Alert if nothing has been uploaded for this long while work is pending.
+STALE_UPLOAD_ALERT_DAYS = int(os.getenv("STALE_UPLOAD_ALERT_DAYS", "7"))
+# Hugging Face Spaces auto-deploy: OFF. The owner does not want extra
+# third-party services; set LP_HF_DEPLOY=1 to re-enable.
+HF_DEPLOY_ENABLED = os.getenv("LP_HF_DEPLOY", "0") == "1"
+# Motion-graphics engine (storyboard -> animated scenes). Set LP_MOTION=0 to
+# fall back to the classic browser-scroll recorder for every video.
+MOTION_ENGINE = os.getenv("LP_MOTION", "1") == "1"
+# Extra Shorts (reach multiplier): more angles per project + fresh Shorts for
+# the back catalogue, paced separately from long-form uploads.
+EXTRA_SHORTS_ENABLED = os.getenv("LP_EXTRA_SHORTS", "1") == "1"
+EXTRA_SHORTS_BACKCATALOG = os.getenv("LP_EXTRA_SHORTS_BACKCATALOG", "1") == "1"
+EXTRA_SHORTS_PER_DAY = int(os.getenv("LP_EXTRA_SHORTS_PER_DAY", "1"))

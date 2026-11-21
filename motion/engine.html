@@ -1,0 +1,705 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>launchpad motion engine</title>
+<!--
+  Deterministic motion-graphics engine. Python (motion/render.py) loads this
+  page in headless Chromium, calls window.init(payload) once, then
+  window.renderAt(t) for every frame and screenshots it. Every visual is a
+  pure function of t, so renders are frame-perfect and reproducible.
+  No CSS transitions/animations are used anywhere (they would not be seekable).
+  Fonts are Windows system fonts - no network access at render time.
+-->
+<style>
+:root {
+  --bg: #070B14; --fg: #F4F7FB; --mut: #8E9AB2; --acc: #22D3EE; --acc2: #A78BFA;
+  --good: #34D399; --warn: #FBBF24; --bad: #F87171;
+  --card: rgba(15, 22, 38, .92); --line: #23314D; --u: 10.8px;
+  --sans: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  --mono: "Cascadia Code", "Cascadia Mono", Consolas, "Courier New", monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 100%; height: 100%; background: var(--bg); overflow: hidden; }
+body { font-family: var(--sans); color: var(--fg); -webkit-font-smoothing: antialiased; }
+#stage { position: absolute; inset: 0; overflow: hidden; background: var(--bg); }
+#bg { position: absolute; inset: 0; overflow: hidden; }
+.grid { position: absolute; left: -10%; top: -10%; width: 120%; height: 120%;
+  background-image: linear-gradient(rgba(255,255,255,.04) 1px, transparent 1px),
+                    linear-gradient(90deg, rgba(255,255,255,.04) 1px, transparent 1px);
+  background-size: calc(var(--u)*6.4) calc(var(--u)*6.4); }
+.blob { position: absolute; border-radius: 50%; filter: blur(calc(var(--u)*12)); opacity: .2; }
+.vignette { position: absolute; inset: 0; background: radial-gradient(ellipse at center, transparent 45%, rgba(0,0,0,.55) 100%); }
+#scenes { position: absolute; inset: 0; }
+.scene { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  visibility: hidden; padding: calc(var(--u)*7) calc(var(--u)*8); }
+.v .scene { padding: calc(var(--u)*16) calc(var(--u)*5) calc(var(--u)*56) calc(var(--u)*5); }
+.v .scene.full { padding-bottom: calc(var(--u)*50); }
+.col { display: flex; flex-direction: column; align-items: center; text-align: center; width: 100%; }
+.kicker { font-family: var(--mono); font-size: calc(var(--u)*2.3); letter-spacing: .18em; text-transform: uppercase;
+  color: var(--acc); margin-bottom: calc(var(--u)*2.4); }
+.headline { font-weight: 800; line-height: 1.06; letter-spacing: -.02em; font-size: calc(var(--u)*9.2); max-width: 92%; }
+.v .headline { font-size: calc(var(--u)*9.4); max-width: 100%; }
+.headline.small { font-size: calc(var(--u)*6.2); }
+.v .headline.small { font-size: calc(var(--u)*7.6); }
+.word { display: inline-block; white-space: pre; will-change: transform, opacity; }
+.grad { background: linear-gradient(92deg, var(--acc), var(--acc2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.sub { margin-top: calc(var(--u)*3); font-size: calc(var(--u)*3.4); color: var(--mut); font-weight: 500; max-width: 80%; line-height: 1.3; }
+.v .sub { font-size: calc(var(--u)*4.4); max-width: 100%; }
+.bar { height: calc(var(--u)*.7); border-radius: 99px; margin-top: calc(var(--u)*3.2);
+  background: linear-gradient(90deg, var(--acc), var(--acc2)); width: 0; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: calc(var(--u)*1.6);
+  box-shadow: 0 calc(var(--u)*3) calc(var(--u)*8) rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.02) inset; overflow: hidden; }
+.chrome { display: flex; align-items: center; gap: calc(var(--u)*.9); padding: calc(var(--u)*1.3) calc(var(--u)*1.8);
+  background: rgba(255,255,255,.035); border-bottom: 1px solid var(--line); }
+.dot { width: calc(var(--u)*1.25); height: calc(var(--u)*1.25); border-radius: 50%; }
+.tab { margin-left: calc(var(--u)*1.4); font-family: var(--mono); font-size: calc(var(--u)*1.9); color: var(--mut); }
+.code { font-family: var(--mono); font-size: calc(var(--u)*2.75); line-height: 1.55; padding: calc(var(--u)*2.2) calc(var(--u)*2.6);
+  white-space: pre; color: #D6DEEB; text-align: left; }
+.code.dense { font-size: calc(var(--u)*2.35); }
+.v .code { font-size: calc(var(--u)*3.5); }
+.v .code.dense { font-size: calc(var(--u)*2.8); }
+.ln { display: block; padding: 0 calc(var(--u)*1.2); border-radius: calc(var(--u)*.6); }
+.ln .no { color: #4A5878; display: inline-block; width: 3ch; margin-right: 1.6ch; text-align: right; }
+.tk-k { color: #C792EA; } .tk-s { color: #ECC48D; } .tk-c { color: #637777; font-style: italic; }
+.tk-n { color: #F78C6C; } .tk-f { color: #82AAFF; } .tk-b { color: #7FDBCA; } .tk-d { color: #FFCB6B; }
+.term { font-family: var(--mono); font-size: calc(var(--u)*2.8); line-height: 1.6; padding: calc(var(--u)*2.4) calc(var(--u)*2.8);
+  white-space: pre-wrap; word-break: break-word; color: #CFD8E6; min-height: calc(var(--u)*30); text-align: left; }
+.v .term { font-size: calc(var(--u)*3.1); min-height: calc(var(--u)*55); }
+.prompt { color: var(--good); } .cmd { color: #F4F7FB; } .out { color: #9FB0CC; }
+.cursor { display: inline-block; width: .6em; height: 1.15em; vertical-align: text-bottom; background: var(--acc); margin-left: 2px; }
+.items { display: flex; flex-direction: column; gap: calc(var(--u)*1.8); width: 100%; max-width: calc(var(--u)*120); }
+.item { display: flex; align-items: center; gap: calc(var(--u)*2.2); padding: calc(var(--u)*2) calc(var(--u)*2.6);
+  border-radius: calc(var(--u)*1.4); background: rgba(255,255,255,.035); border: 1px solid var(--line);
+  font-size: calc(var(--u)*3.2); font-weight: 600; text-align: left; }
+.v .item { font-size: calc(var(--u)*3.6); }
+.badge { flex: none; width: calc(var(--u)*5); height: calc(var(--u)*5); border-radius: calc(var(--u)*1.2); display: flex;
+  align-items: center; justify-content: center; font-weight: 800; font-size: calc(var(--u)*2.6); color: #04131A;
+  background: linear-gradient(135deg, var(--acc), var(--acc2)); }
+.stats { display: flex; gap: calc(var(--u)*4); justify-content: center; width: 100%; }
+.v .stats { flex-direction: column; gap: calc(var(--u)*3.4); align-items: center; }
+.stat { text-align: center; min-width: calc(var(--u)*26); }
+.stat .num { font-weight: 800; font-size: calc(var(--u)*15); letter-spacing: -.03em; line-height: 1; }
+.stat .lbl { margin-top: calc(var(--u)*1.6); font-size: calc(var(--u)*3.3); color: var(--mut); font-weight: 500; }
+.v .stat .num { font-size: calc(var(--u)*17); }
+.v .stat .lbl { font-size: calc(var(--u)*4); }
+.cmpwrap { display: flex; gap: calc(var(--u)*3); width: 100%; max-width: calc(var(--u)*150); }
+.v .cmpwrap { flex-direction: column; }
+.cmp { flex: 1; padding: calc(var(--u)*3); border-radius: calc(var(--u)*1.6); border: 1px solid var(--line); background: rgba(255,255,255,.03); }
+.cmp h3 { font-size: calc(var(--u)*2.6); letter-spacing: .12em; text-transform: uppercase; margin-bottom: calc(var(--u)*2); color: var(--mut); }
+.cmp.win { border-color: rgba(34,211,238,.6); background: rgba(34,211,238,.06); }
+.cmp.win h3 { color: var(--acc); }
+.cmp li { list-style: none; font-size: calc(var(--u)*2.9); font-weight: 600; margin: calc(var(--u)*1.3) 0; text-align: left; }
+.browser { width: 100%; max-width: calc(var(--u)*150); height: 100%; max-height: calc(var(--u)*82); display: flex; flex-direction: column; }
+.v .browser { max-height: none; height: 100%; }
+.url { flex: 1; margin-left: calc(var(--u)*1.4); padding: calc(var(--u)*.7) calc(var(--u)*1.6); border-radius: 99px;
+  background: rgba(255,255,255,.06); font-family: var(--mono); font-size: calc(var(--u)*1.9); color: var(--mut); }
+.viewport { position: relative; flex: 1; overflow: hidden; background: #0d1117; }
+.viewport img { position: absolute; left: 0; top: 0; width: 100%; }
+#diag svg { position: absolute; inset: 0; overflow: visible; }
+.node { position: absolute; transform: translate(-50%, -50%); padding: calc(var(--u)*1.6) calc(var(--u)*2.2);
+  border-radius: calc(var(--u)*1.4); background: var(--card); border: 1.5px solid var(--line); text-align: center;
+  min-width: calc(var(--u)*17); box-shadow: 0 calc(var(--u)*1.5) calc(var(--u)*4) rgba(0,0,0,.45); }
+.node .t { font-weight: 700; font-size: calc(var(--u)*3.1); white-space: nowrap; }
+.node .s { margin-top: calc(var(--u)*.5); font-size: calc(var(--u)*2.1); color: var(--mut); white-space: nowrap; }
+.v .node { padding: calc(var(--u)*2.2) calc(var(--u)*3.4); border-radius: calc(var(--u)*1.8); }
+.v .node .t { font-size: calc(var(--u)*5); }
+.v .node .s { font-size: calc(var(--u)*3.2); }
+.v .cta-url { font-size: calc(var(--u)*3.5); white-space: nowrap; }
+.node.hot { border-color: var(--acc); box-shadow: 0 0 calc(var(--u)*3) rgba(34,211,238,.35); }
+.title-top { position: absolute; top: calc(var(--u)*5.5); left: 0; right: 0; text-align: center; font-weight: 800;
+  font-size: calc(var(--u)*4); letter-spacing: -.01em; }
+.v .title-top { top: calc(var(--u)*13); font-size: calc(var(--u)*5); padding: 0 calc(var(--u)*5); }
+#captions { position: absolute; left: 0; right: 0; bottom: calc(var(--u)*5.5); display: flex; justify-content: center;
+  pointer-events: none; padding: 0 calc(var(--u)*8); }
+.v #captions { bottom: auto; top: 71%; padding: 0 calc(var(--u)*6); }
+.capbox { display: inline-block; padding: calc(var(--u)*.9) calc(var(--u)*2.2); border-radius: calc(var(--u)*1.2);
+  background: rgba(3,6,12,.72); font-weight: 650; font-size: calc(var(--u)*3.3); line-height: 1.25; text-align: center; }
+.v .capbox { background: none; padding: 0; font-weight: 900; font-size: calc(var(--u)*7.4); line-height: 1.12;
+  letter-spacing: -.01em; text-transform: uppercase;
+  text-shadow: 0 0 calc(var(--u)*.6) #000, 0 calc(var(--u)*.5) calc(var(--u)*1.6) rgba(0,0,0,.9);
+  -webkit-text-stroke: calc(var(--u)*.35) #000; paint-order: stroke fill; }
+.cw { display: inline-block; white-space: pre; margin: 0 .07em; transform-origin: 50% 70%; }
+.cw.on { color: var(--acc); }
+.v .cw.on { color: #FDE047; }
+#handle { position: absolute; right: calc(var(--u)*3); bottom: calc(var(--u)*2.2); font-family: var(--mono);
+  font-size: calc(var(--u)*1.7); color: rgba(255,255,255,.38); }
+.v #handle { right: 0; left: 0; text-align: center; bottom: calc(var(--u)*7); font-size: calc(var(--u)*2.4); }
+#progress { position: absolute; left: 0; top: 0; height: calc(var(--u)*.55); width: 0;
+  background: linear-gradient(90deg, var(--acc), var(--acc2)); }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="bg"><div class="grid" id="grid"></div><div class="blob" id="b1"></div><div class="blob" id="b2"></div><div class="vignette"></div></div>
+  <div id="scenes"></div>
+  <div id="captions"></div>
+  <div id="handle"></div>
+  <div id="progress"></div>
+</div>
+<script>
+"use strict";
+// ---------------------------------------------------------------- utils
+const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
+const prog = (t, a, b) => clamp((t - a) / Math.max(1e-6, b - a));
+const easeOut = x => 1 - Math.pow(1 - x, 3);
+const easeInOut = x => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+const back = x => { const c1 = 1.5, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); };
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; };
+
+let P = null;            // payload
+let SC = [];             // [{start,end,el,update}]
+let PHRASES = [];        // caption phrases
+let U = 10.8;            // css unit in px
+let VERT = false;
+let TOTAL = 1;
+
+// ------------------------------------------------------- syntax highlight
+const KW = new Set(("def class return if elif else for while in not and or is import from as with try except finally " +
+  "raise yield lambda pass break continue async await None True False self const let var function new this typeof " +
+  "export default interface type extends implements public private static fn pub struct impl match use mod").split(" "));
+const BUILTIN = new Set("print len range dict list set str int float bool open super isinstance enumerate zip map filter sorted console json Promise Math".split(" "));
+function highlight(line, lang) {
+  if (lang === "bash" || lang === "shell" || lang === "sh") {
+    if (/^\s*#/.test(line)) return `<span class="tk-c">${esc(line)}</span>`;
+  }
+  let out = "", i = 0;
+  const n = line.length;
+  while (i < n) {
+    const ch = line[i];
+    const rest = line.slice(i);
+    if ((ch === "#" && lang !== "js" && lang !== "ts") || rest.startsWith("//")) { out += `<span class="tk-c">${esc(rest)}</span>`; break; }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      let j = i + 1; while (j < n && line[j] !== ch) { if (line[j] === "\\") j++; j++; }
+      out += `<span class="tk-s">${esc(line.slice(i, j + 1))}</span>`; i = j + 1; continue;
+    }
+    if (ch === "@") { const m = rest.match(/^@[\w.]+/); if (m) { out += `<span class="tk-d">${esc(m[0])}</span>`; i += m[0].length; continue; } }
+    const num = rest.match(/^\d+(\.\d+)?/);
+    if (num && (i === 0 || !/\w/.test(line[i - 1]))) { out += `<span class="tk-n">${num[0]}</span>`; i += num[0].length; continue; }
+    const id = rest.match(/^[A-Za-z_]\w*/);
+    if (id) {
+      const w = id[0], after = line.slice(i + w.length);
+      if (KW.has(w)) out += `<span class="tk-k">${w}</span>`;
+      else if (BUILTIN.has(w)) out += `<span class="tk-b">${w}</span>`;
+      else if (/^\s*\(/.test(after)) out += `<span class="tk-f">${w}</span>`;
+      else out += esc(w);
+      i += w.length; continue;
+    }
+    out += esc(ch); i++;
+  }
+  return out;
+}
+
+// --------------------------------------------------------------- scenes
+function wordsOf(text, emphasis) {
+  const em = new Set((emphasis || []).map(w => w.toLowerCase().replace(/[^\w-]/g, "")));
+  return String(text || "").split(/\s+/).filter(Boolean).map(w => {
+    const key = w.toLowerCase().replace(/[^\w-]/g, "");
+    return { w, em: em.has(key) };
+  });
+}
+
+function sceneHook(root, v, d, opts = {}) {
+  const col = el("div", "col");
+  let kick = null;
+  if (v.kicker) { kick = el("div", "kicker", esc(v.kicker)); col.appendChild(kick); }
+  const h = el("div", "headline" + (opts.small ? " small" : ""));
+  const ws = wordsOf(v.headline, v.emphasis).map((o, i) => {
+    const s = el("span", "word" + (o.em ? " grad" : ""), esc(o.w) + " ");
+    h.appendChild(s); return s;
+  });
+  col.appendChild(h);
+  let sub = null;
+  if (v.sub) { sub = el("div", "sub", esc(v.sub)); col.appendChild(sub); }
+  const bar = el("div", "bar"); col.appendChild(bar);
+  root.appendChild(col);
+  const per = Math.min(0.11, (d * 0.42) / Math.max(1, ws.length));
+  const lead = v._instant ? .9 : 0;    // opening scene: hook already on frame 0
+  return t0 => {
+    const t = t0 + lead;
+    if (kick) { const k = easeOut(prog(t, 0, .35)); kick.style.opacity = k; kick.style.transform = `translateY(${(1 - k) * U * 2}px)`; }
+    ws.forEach((s, i) => {
+      const k = prog(t, .05 + i * per, .05 + i * per + .38);
+      s.style.opacity = clamp(k * 1.6);
+      s.style.transform = `translateY(${(1 - easeOut(k)) * U * 4}px) scale(${0.9 + 0.1 * back(k)})`;
+    });
+    const hEnd = .05 + ws.length * per + .3;
+    if (sub) { const k = easeOut(prog(t, hEnd, hEnd + .45)); sub.style.opacity = k; sub.style.transform = `translateY(${(1 - k) * U * 2}px)`; }
+    bar.style.width = `${easeOut(prog(t, hEnd - .1, hEnd + .7)) * U * 16}px`;
+    col.style.transform = `scale(${1 + 0.035 * prog(t, 0, d)})`;
+  };
+}
+
+function sceneBullets(root, v, d) {
+  const col = el("div", "col");
+  if (v.title) { const tt = el("div", "headline small", esc(v.title)); tt.style.marginBottom = `${U * 4}px`; col.appendChild(tt); }
+  const box = el("div", "items");
+  const glyph = v.style === "num" ? (i => String(i + 1)) : v.style === "arrow" ? (() => "→") : (() => "✓");
+  const items = (v.items || []).slice(0, 5).map((txt, i) => {
+    const it = el("div", "item", `<div class="badge">${glyph(i)}</div><div>${esc(txt)}</div>`);
+    box.appendChild(it); return it;
+  });
+  col.appendChild(box); root.appendChild(col);
+  const title = col.firstChild && col.firstChild.classList.contains("headline") ? col.firstChild : null;
+  const span = d * 0.72, start = title ? .35 : .1;
+  const step = items.length ? (span - start) / items.length : 1;
+  return t => {
+    if (title) { const k = easeOut(prog(t, 0, .4)); title.style.opacity = k; title.style.transform = `translateY(${(1 - k) * U * 2}px)`; }
+    items.forEach((it, i) => {
+      const a = start + i * step;
+      const k = easeOut(prog(t, a, a + .4));
+      it.style.opacity = k;
+      it.style.transform = `translateX(${(1 - k) * U * -5}px)`;
+      const active = t >= a && (i === items.length - 1 || t < a + step);
+      it.style.borderColor = active ? "rgba(34,211,238,.65)" : "";
+      it.style.background = active ? "rgba(34,211,238,.07)" : "";
+    });
+  };
+}
+
+function sceneCode(root, v, d) {
+  const lines = String(v.code || "").replace(/\t/g, "    ").split("\n").slice(0, VERT ? 16 : 18);
+  const hl = new Set((v.highlight || []).map(Number));
+  const card = el("div", "card");
+  card.style.width = VERT ? "100%" : "auto";
+  card.style.maxWidth = `${U * 150}px`;
+  card.appendChild(el("div", "chrome",
+    `<span class="dot" style="background:#FF5F57"></span><span class="dot" style="background:#FEBC2E"></span>` +
+    `<span class="dot" style="background:#28C840"></span><span class="tab">${esc(v.filename || "main.py")}</span>`));
+  const pre = el("div", "code" + (lines.length > 13 ? " dense" : ""));
+  const longest = lines.reduce((m, l) => Math.max(m, l.length), 0);
+  const rows = lines.map((ln, i) => {
+    const r = el("span", "ln");
+    r.innerHTML = `<span class="no">${i + 1}</span><span class="tx"></span>`;
+    pre.appendChild(r); return { r, tx: r.lastChild, src: ln, html: highlight(ln, v.language || "python") };
+  });
+  card.appendChild(pre);
+  const wrap = el("div", "col"); wrap.appendChild(card);
+  if (v.caption) { const c = el("div", "sub", esc(v.caption)); wrap.appendChild(c); }
+  root.appendChild(wrap);
+  // Auto-fit: shrink the font until the longest line fits the frame, so no
+  // real code line is ever clipped (monospace advance ~0.61em).
+  const availW = (VERT ? innerWidth * 0.92 : Math.min(innerWidth * 0.86, U * 150)) - U * 6;
+  const base = parseFloat(getComputedStyle(pre).fontSize) || U * 2.6;
+  const need = (longest + 6.5) * base * 0.61;
+  if (need > availW) pre.style.fontSize = `${Math.max(base * 0.5, base * availW / need)}px`;
+  if (need * 0.5 > availW) {
+    // Even the smallest readable size cannot fit (very long line in a Short):
+    // wrap instead of clipping real code.
+    pre.style.whiteSpace = "pre-wrap";
+    pre.style.wordBreak = "break-all";
+    pre.style.maxWidth = `${availW}px`;
+    pre.style.fontSize = `${base * 0.8}px`;   // wrapping, so keep it readable
+  } else {
+    pre.style.minWidth = `${longest + 6.5}ch`;
+  }
+  const total = lines.reduce((a, l) => a + l.length + 1, 0);
+  const typeDur = Math.min(d * 0.45, Math.max(.6, total * 0.011));
+  let cache = -1;
+  return t => {
+    const k = easeOut(prog(t, 0, .35));
+    card.style.opacity = k;
+    const shown = Math.floor(total * prog(t, .15, .15 + typeDur));
+    if (shown !== cache) {
+      cache = shown; let left = shown;
+      rows.forEach(o => {
+        if (left >= o.src.length) { o.tx.innerHTML = o.html; left -= o.src.length + 1; }
+        else if (left > 0) { o.tx.innerHTML = esc(o.src.slice(0, left)); left = 0; }
+        else { o.tx.innerHTML = ""; }
+      });
+    }
+    const hk = easeOut(prog(t, .2 + typeDur, .2 + typeDur + .5));
+    rows.forEach((o, i) => {
+      const on = hl.has(i + 1);
+      o.r.style.background = on ? `rgba(34,211,238,${0.13 * hk})` : "";
+      o.r.style.boxShadow = on && hk > 0 ? `inset ${U * .45}px 0 0 rgba(34,211,238,${hk})` : "";
+      o.r.style.opacity = hl.size && !on ? 1 - 0.45 * hk : 1;
+    });
+    const z = 1 + 0.06 * easeInOut(prog(t, .2 + typeDur, d));
+    card.style.transform = `translateY(${(1 - k) * U * 3}px) scale(${z})`;
+  };
+}
+
+function sceneTerminal(root, v, d) {
+  const card = el("div", "card");
+  card.style.width = "100%"; card.style.maxWidth = `${U * 140}px`;
+  card.appendChild(el("div", "chrome",
+    `<span class="dot" style="background:#FF5F57"></span><span class="dot" style="background:#FEBC2E"></span>` +
+    `<span class="dot" style="background:#28C840"></span><span class="tab">${esc(v.title || "terminal")}</span>`));
+  const term = el("div", "term"); card.appendChild(term);
+  root.appendChild(card);
+  const lines = (v.lines || []).slice(0, 14);
+  // schedule: commands type at ~32 chars/s, outputs reveal 0.10s per line
+  let tt = .35; const sched = [];
+  lines.forEach(l => {
+    if (l.cmd != null) { const dur = Math.min(2.2, Math.max(.35, String(l.cmd).length / 32)); sched.push({ ...l, a: tt, b: tt + dur }); tt += dur + .25; }
+    else { sched.push({ ...l, a: tt, b: tt }); tt += .1; }
+  });
+  const scale = tt > d * .85 ? (d * .85) / tt : 1;
+  sched.forEach(s => { s.a *= scale; s.b *= scale; });
+  return t => {
+    const k = easeOut(prog(t, 0, .35));
+    card.style.opacity = k; card.style.transform = `translateY(${(1 - k) * U * 3}px)`;
+    let html = ""; let typing = false;
+    for (const s of sched) {
+      if (t < s.a) break;
+      if (s.cmd != null) {
+        const c = String(s.cmd); const n = Math.floor(c.length * prog(t, s.a, s.b));
+        html += `<span class="prompt">$ </span><span class="cmd">${esc(c.slice(0, n))}</span>`;
+        if (n < c.length) { typing = true; break; }
+        html += "\n";
+      } else {
+        html += `<span class="out">${esc(s.out)}</span>\n`;
+      }
+    }
+    const blink = typing || Math.floor(t * 2) % 2 === 0;
+    term.innerHTML = html + (blink ? '<span class="cursor"></span>' : "");
+  };
+}
+
+function sceneStats(root, v, d) {
+  const col = el("div", "col");
+  let title = null;
+  if (v.title) { title = el("div", "headline small", esc(v.title)); title.style.marginBottom = `${U * 5}px`; col.appendChild(title); }
+  const box = el("div", "stats");
+  const items = (v.items || []).slice(0, 3).map(s => {
+    const e = el("div", "stat", `<div class="num grad">0</div><div class="lbl">${esc(s.label || "")}</div>`);
+    box.appendChild(e); return { e, num: e.firstChild, s };
+  });
+  col.appendChild(box); root.appendChild(col);
+  return t => {
+    if (title) { const k = easeOut(prog(t, 0, .4)); title.style.opacity = k; }
+    items.forEach((o, i) => {
+      const a = .25 + i * .3, k = easeOut(prog(t, a, a + 1.3));
+      // Show the verified number EXACTLY as written in the material (99.9
+      // stays 99.9, 0.042 stays 0.042) - rounding would change the claim.
+      const vt = String(o.s.value_text != null ? o.s.value_text : o.s.value);
+      const val = Number(o.s.value) || 0, dec = vt.includes(".") ? Math.min(4, vt.split(".")[1].length) : 0;
+      o.num.textContent = `${o.s.prefix || ""}${(val * k).toFixed(dec)}${o.s.suffix || ""}`;
+      o.e.style.opacity = clamp(prog(t, a, a + .3));
+      o.e.style.transform = `translateY(${(1 - easeOut(prog(t, a, a + .5))) * U * 3}px)`;
+    });
+  };
+}
+
+function sceneCompare(root, v, d) {
+  const col = el("div", "col");
+  let title = null;
+  if (v.title) { title = el("div", "headline small", esc(v.title)); title.style.marginBottom = `${U * 4}px`; col.appendChild(title); }
+  const wrap = el("div", "cmpwrap");
+  const mk = (side, win) => {
+    const c = el("div", "cmp" + (win ? " win" : ""));
+    c.innerHTML = `<h3>${esc((side || {}).title || "")}</h3><ul>${((side || {}).items || []).slice(0, 5).map(x => `<li>${win ? "✓ " : "✗ "}${esc(x)}</li>`).join("")}</ul>`;
+    wrap.appendChild(c); return c;
+  };
+  const L = mk(v.left, false), R = mk(v.right, true);
+  col.appendChild(wrap); root.appendChild(col);
+  return t => {
+    if (title) title.style.opacity = easeOut(prog(t, 0, .4));
+    const a = easeOut(prog(t, .25, .7)), b = easeOut(prog(t, d * .38, d * .38 + .5));
+    L.style.opacity = a; L.style.transform = `translateY(${(1 - a) * U * 3}px)`;
+    R.style.opacity = b; R.style.transform = `translateY(${(1 - b) * U * 3}px) scale(${1 + .02 * b})`;
+    L.style.filter = b > 0 ? `saturate(${1 - .6 * b})` : "";
+  };
+}
+
+function sceneBrowser(root, v, d) {
+  const card = el("div", "card browser");
+  card.appendChild(el("div", "chrome",
+    `<span class="dot" style="background:#FF5F57"></span><span class="dot" style="background:#FEBC2E"></span>` +
+    `<span class="dot" style="background:#28C840"></span><span class="url">${esc(v.url || "")}</span>`));
+  const vp = el("div", "viewport");
+  const img = new Image(); img.src = (P.images || {})[v.image] || "";
+  vp.appendChild(img); card.appendChild(vp); root.appendChild(card);
+  const frac = v.scroll_frac != null ? Number(v.scroll_frac) : .35;
+  return t => {
+    const k = easeOut(prog(t, 0, .35));
+    card.style.opacity = k;
+    card.style.transform = `translateY(${(1 - k) * U * 3}px) scale(${1 + 0.03 * prog(t, 0, d)})`;
+    const maxScroll = Math.max(0, img.offsetHeight - vp.clientHeight);
+    const y = maxScroll * frac * easeInOut(prog(t, d * .18, d * .92));
+    img.style.transform = `translateY(${-y}px)`;
+  };
+}
+
+function sceneDiagram(root, v, d) {
+  root.classList.add("full");
+  const box = el("div"); box.id = "diag";
+  box.style.position = "relative"; box.style.width = "100%"; box.style.height = "100%";
+  root.appendChild(box);
+  let title = null;
+  if (v.title) { title = el("div", "title-top", esc(v.title)); root.appendChild(title); }
+  const nodes = (v.nodes || []).slice(0, 9);
+  const ids = new Map(nodes.map((n, i) => [String(n.id ?? i), i]));
+  const edges = (v.edges || []).map(e => Array.isArray(e) ? { from: e[0], to: e[1], label: e[2] } : e)
+    .filter(e => ids.has(String(e.from)) && ids.has(String(e.to)));
+  // layer = longest path from a source (Kahn's algorithm). Nodes caught in a
+  // cycle never reach in-degree 0; they go one layer after the rest instead
+  // of being pushed across dozens of empty layers. Layers are then compacted.
+  // 1) DFS from the sources finds the loop-closing ("back") edges; 2) the rest
+  // is a DAG laid out by longest path; 3) back edges are drawn as visible arcs.
+  const adjE = nodes.map(() => []), indeg0 = nodes.map(() => 0);
+  edges.forEach((e, k) => { const a = ids.get(String(e.from)), b = ids.get(String(e.to)); if (a !== b) { adjE[a].push([k, b]); indeg0[b]++; } });
+  const mark = nodes.map(() => 0), backSet = new Set();
+  const dfs = u => { mark[u] = 1; for (const [k, w] of adjE[u]) { if (mark[w] === 1) backSet.add(k); else if (!mark[w]) dfs(w); } mark[u] = 2; };
+  nodes.map((_, i) => i).sort((a, b) => indeg0[a] - indeg0[b] || a - b).forEach(u => { if (!mark[u]) dfs(u); });
+  const layer = nodes.map(() => 0), indeg = nodes.map(() => 0), adj = nodes.map(() => []);
+  edges.forEach((e, k) => {
+    if (backSet.has(k)) return;
+    const a = ids.get(String(e.from)), b = ids.get(String(e.to)); if (a !== b) { adj[a].push(b); indeg[b]++; }
+  });
+  const queue = [], done = new Set();
+  indeg.forEach((d, i) => { if (!d) queue.push(i); });
+  while (queue.length) {
+    const a = queue.shift(); done.add(a);
+    for (const b of adj[a]) { layer[b] = Math.max(layer[b], layer[a] + 1); if (--indeg[b] === 0) queue.push(b); }
+  }
+  const doneMax = done.size ? Math.max(...[...done].map(i => layer[i])) : -1;
+  nodes.forEach((_, i) => { if (!done.has(i)) layer[i] = doneMax + 1; });
+  const uniqL = [...new Set(layer)].sort((a, b) => a - b), remap = new Map(uniqL.map((l, i) => [l, i]));
+  nodes.forEach((_, i) => { layer[i] = remap.get(layer[i]); });
+  const nL = Math.max(...layer, 0) + 1;
+  const byL = Array.from({ length: nL }, () => []);
+  nodes.forEach((n, i) => byL[layer[i]].push(i));
+  const els = nodes.map((n, i) => {
+    const e = el("div", "node" + (n.hot ? " hot" : ""), `<div class="t">${esc(n.label || n.id)}</div>${n.sub ? `<div class="s">${esc(n.sub)}</div>` : ""}`);
+    box.appendChild(e); return e;
+  });
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg"); box.insertBefore(svg, box.firstChild);
+  const defs = document.createElementNS(NS, "defs");
+  defs.innerHTML = `<linearGradient id="eg" x1="0" x2="1"><stop offset="0" stop-color="#22D3EE"/><stop offset="1" stop-color="#A78BFA"/></linearGradient>`;
+  svg.appendChild(defs);
+  // Solid stroke: an objectBoundingBox gradient on a perfectly straight
+  // (zero-height/width) path renders NOTHING, which hid every straight edge.
+  const paths = edges.map(() => { const p = document.createElementNS(NS, "path"); p.setAttribute("fill", "none"); p.setAttribute("stroke", "#4CC9E8"); p.setAttribute("stroke-linecap", "round"); p.setAttribute("stroke-width", U * .34); svg.appendChild(p); return p; });
+  const pulses = edges.map(() => { const c = document.createElementNS(NS, "circle"); c.setAttribute("r", U * .75); c.setAttribute("fill", "#E0FBFF"); svg.appendChild(c); return c; });
+  let laid = false, lens = [];
+  // Long chains in 16:9 wrap into a two-row "snake" (row 1 left->right,
+  // row 2 right->left) instead of squeezing tiny nodes into one thin row.
+  // Snake only for simple chains (one node per layer); branching layers keep
+  // the column layout so siblings never overlap.
+  const snake = !VERT && nL >= 5 && byL.every(l => l.length === 1);
+  const k1 = Math.ceil(nL / 2);
+  let fitS = 1;   // uniform node scale so the widest layer always fits
+  function anchorPath(a, b, bow) {
+    const dx = b._x - a._x, dy = b._y - a._y, aw = a.offsetWidth * fitS, bw = b.offsetWidth * fitS;
+    const ah = a.offsetHeight * fitS, bh = b.offsetHeight * fitS;
+    if (bow) {
+      // Loop-back / skip edges: leave and enter through the outer side and
+      // arc around, so the edge never hides behind the nodes in between.
+      if (!VERT) {
+        const ay = a._y + ah / 2, by = b._y + bh / 2, off = Math.max(ah, bh) * 1.4 + Math.abs(dx) * 0.08;
+        return `M${a._x},${ay} C${a._x},${ay + off} ${b._x},${by + off} ${b._x},${by}`;
+      }
+      const ax = a._x + aw / 2, bx = b._x + bw / 2, off = Math.max(aw, bw) * 0.45 + Math.abs(dy) * 0.08;
+      return `M${ax},${a._y} C${ax + off},${a._y} ${bx + off},${b._y} ${bx},${b._y}`;
+    }
+    if (Math.abs(dx) >= Math.abs(dy)) {
+      const s = Math.sign(dx) || 1, ax = a._x + s * aw / 2, bx = b._x - s * bw / 2, mx = (ax + bx) / 2;
+      return `M${ax},${a._y} C${mx},${a._y} ${mx},${b._y} ${bx},${b._y}`;
+    }
+    const s = Math.sign(dy) || 1, ay = a._y + s * ah / 2, by = b._y - s * bh / 2, my = (ay + by) / 2;
+    return `M${a._x},${ay} C${a._x},${my} ${b._x},${my} ${b._x},${by}`;
+  }
+  function layout() {
+    const W = box.clientWidth, H = box.clientHeight;
+    // Fit: in vertical mode a layer's nodes sit side by side; in landscape a
+    // layer's column must fit its share of the width.
+    fitS = 1;
+    byL.forEach(lst => {
+      if (!lst.length) return;
+      if (VERT) {
+        const total = lst.reduce((s, i) => s + els[i].offsetWidth, 0) + U * 2 * (lst.length - 1);
+        fitS = Math.min(fitS, (W * 0.96) / total);
+      } else {
+        const cols = snake ? Math.max(k1, 1) : nL;
+        const widest = Math.max(...lst.map(i => els[i].offsetWidth));
+        fitS = Math.min(fitS, (W / cols) * 0.92 / widest);
+      }
+    });
+    if (VERT) {   // the flow axis must fit too: all layers stacked in the box height
+      const maxH = Math.max(...els.map(e => e.offsetHeight));
+      fitS = Math.min(fitS, (H * 0.9) / (nL * maxH + (nL - 1) * U * 2.5));
+    }
+    fitS = Math.max(0.45, Math.min(1, fitS));
+    // Vertical: place siblings by their MEASURED widths, centred, so unequal
+    // labels never overlap.
+    const vx = new Map();
+    if (VERT) byL.forEach(lst => {
+      const ws = lst.map(i => els[i].offsetWidth * fitS), gap = U * 2;
+      const total = ws.reduce((s, w) => s + w, 0) + gap * (lst.length - 1);
+      let cx = (W - total) / 2;
+      lst.forEach((i, j) => { vx.set(i, cx + ws[j] / 2); cx += ws[j] + gap; });
+    });
+    nodes.forEach((n, i) => {
+      const L = layer[i], idx = byL[L].indexOf(i), cnt = byL[L].length;
+      let x, y;
+      if (snake) {
+        const row = L < k1 ? 0 : 1, cols = row === 0 ? k1 : nL - k1;
+        const col = row === 0 ? L : (nL - 1 - L);           // second row runs right -> left
+        x = W * (col + .5) / Math.max(cols, k1);
+        if (row === 1 && cols < k1) x += W * (k1 - cols) / k1; // keep row 2 right-aligned under row 1's end
+        const band = H * .3, cy = row === 0 ? H * .36 : H * .76;
+        y = cy + (idx - (cnt - 1) / 2) * (band / Math.max(cnt, 1));
+      } else if (!VERT) { x = W * (L + .5) / nL; y = H * (idx + .5) / cnt; y = H * .12 + y * .82; }
+      else { y = H * (L + .5) / nL; x = vx.has(i) ? vx.get(i) : W * (idx + .5) / cnt; y = H * .1 + y * .85; }
+      els[i].style.left = `${x}px`; els[i].style.top = `${y}px`; els[i]._x = x; els[i]._y = y;
+    });
+    edges.forEach((e, k) => {
+      const ia = ids.get(String(e.from)), ib = ids.get(String(e.to));
+      const back = layer[ib] <= layer[ia], skip = Math.abs(layer[ib] - layer[ia]) > 1;
+      const sameLine = snake ? ((layer[ia] < k1) === (layer[ib] < k1)) : true;
+      paths[k].setAttribute("d", anchorPath(els[ia], els[ib], back || (skip && sameLine && !snake)));
+    });
+    lens = paths.map(p => p.getTotalLength());
+    paths.forEach((p, k) => { p.setAttribute("stroke-dasharray", lens[k]); });
+    laid = true;
+  }
+  const order = nodes.map((_, i) => i).sort((a, b) => layer[a] - layer[b] || a - b);
+  const appear = new Array(nodes.length);
+  const span = d * .5;
+  order.forEach((i, r) => appear[i] = .3 + r * (span / Math.max(1, order.length)));
+  return t => {
+    if (!laid) layout();
+    if (title) title.style.opacity = easeOut(prog(t, 0, .4));
+    els.forEach((e, i) => {
+      const k = prog(t, appear[i], appear[i] + .45);
+      e.style.opacity = clamp(k * 1.5);
+      e.style.transform = `translate(-50%,-50%) scale(${fitS * (0.8 + 0.2 * back(k))})`;
+    });
+    edges.forEach((e, k) => {
+      const a = appear[ids.get(String(e.from))], b = appear[ids.get(String(e.to))];
+      const s = Math.max(a, b) + .25, dk = easeInOut(prog(t, s, s + .6));
+      paths[k].setAttribute("stroke-dashoffset", lens[k] * (1 - dk));
+      paths[k].style.opacity = dk > 0 ? .9 : 0;
+      if (dk >= 1) {
+        const ph = ((t - s - .6) * .55 + k * .17) % 1;
+        const pt = paths[k].getPointAtLength(lens[k] * ph);
+        pulses[k].setAttribute("cx", pt.x); pulses[k].setAttribute("cy", pt.y);
+        pulses[k].style.opacity = Math.sin(Math.PI * ph);
+      } else pulses[k].style.opacity = 0;
+    });
+  };
+}
+
+function sceneCta(root, v, d) {
+  const col = el("div", "col");
+  const h = el("div", "headline small", esc(v.headline || "Code is on GitHub"));
+  const url = el("div", "sub cta-url", `<span style="font-family:var(--mono);color:var(--fg)">${esc(v.url || "")}</span>`);
+  const sub = el("div", "sub", esc(v.sub || ""));
+  const bar = el("div", "bar");
+  [h, url, sub, bar].forEach(x => col.appendChild(x)); root.appendChild(col);
+  // Long repo slugs must stay on one readable line: shrink to fit the frame.
+  const maxW = innerWidth * (VERT ? 0.9 : 0.8);
+  if (url.scrollWidth > maxW) url.style.fontSize = `${parseFloat(getComputedStyle(url).fontSize) * maxW / url.scrollWidth}px`;
+  return t => {
+    [h, url, sub].forEach((x, i) => { const k = easeOut(prog(t, .1 + i * .25, .55 + i * .25)); x.style.opacity = k; x.style.transform = `translateY(${(1 - k) * U * 2.5}px)`; });
+    bar.style.width = `${easeOut(prog(t, .6, 1.4)) * U * 18}px`;
+  };
+}
+
+const BUILDERS = {
+  hook: (r, v, d) => sceneHook(r, v, d),
+  statement: (r, v, d) => sceneHook(r, v, d, { small: true }),
+  bullets: sceneBullets, code: sceneCode, terminal: sceneTerminal, stat: sceneStats, stats: sceneStats,
+  compare: sceneCompare, browser: sceneBrowser, diagram: sceneDiagram, cta: sceneCta,
+};
+
+// ------------------------------------------------------------- captions
+function buildPhrases(words, maxWords) {
+  const out = []; let cur = [];
+  const flush = () => { if (cur.length) out.push({ a: cur[0].t0, b: cur[cur.length - 1].t1, w: cur }); cur = []; };
+  words.forEach((w, i) => {
+    const prev = cur[cur.length - 1];
+    if (prev && (w.t0 - prev.t1 > .45 || cur.length >= maxWords)) flush();
+    cur.push(w);
+    if (/[.!?]$/.test(w.text) || (/[,;:]$/.test(w.text) && cur.length >= Math.ceil(maxWords / 2))) flush();
+  });
+  flush();
+  return out;
+}
+let capEl = null, capIdx = -2;
+function renderCaptions(t) {
+  if (!P.captions || P.captions.enabled === false) return;
+  let idx = -1;
+  for (let i = 0; i < PHRASES.length; i++) {
+    const p = PHRASES[i], nextA = i + 1 < PHRASES.length ? PHRASES[i + 1].a : Infinity;
+    if (t >= p.a - .05 && t < Math.min(nextA - .02, p.b + .6)) { idx = i; break; }
+  }
+  if (idx !== capIdx) {
+    capIdx = idx;
+    capEl.innerHTML = idx < 0 ? "" : `<span class="capbox">${PHRASES[idx].w.map(w => `<span class="cw">${esc(w.text)}</span>`).join(" ")}</span>`;
+  }
+  if (idx < 0) return;
+  const p = PHRASES[idx], spans = capEl.querySelectorAll(".cw");
+  const box = capEl.firstChild, pk = easeOut(prog(t, p.a - .05, p.a + .12));
+  box.style.transform = `translateY(${(1 - pk) * U * 1.2}px) scale(${VERT ? 0.92 + 0.08 * back(pk) : 1})`;
+  box.style.opacity = pk;
+  p.w.forEach((w, i) => {
+    const on = t >= w.t0 - .03 && (t < w.t1 + .05 || (i === p.w.length - 1));
+    spans[i].classList.toggle("on", on && t < p.b + .05);
+    spans[i].style.transform = VERT && on ? `scale(1.06)` : "";
+  });
+}
+
+// ------------------------------------------------------------ background
+function renderBg(t) {
+  const W = innerWidth, H = innerHeight;
+  const b1 = document.getElementById("b1"), b2 = document.getElementById("b2"), g = document.getElementById("grid");
+  const s = Math.max(W, H) * .55;
+  b1.style.width = b1.style.height = `${s}px`; b2.style.width = b2.style.height = `${s * .8}px`;
+  b1.style.background = "#22D3EE"; b2.style.background = "#8B5CF6";
+  b1.style.left = `${W * (.15 + .08 * Math.sin(t * .23)) - s / 2}px`; b1.style.top = `${H * (.25 + .07 * Math.cos(t * .19)) - s / 2}px`;
+  b2.style.left = `${W * (.85 + .07 * Math.cos(t * .17)) - s * .4}px`; b2.style.top = `${H * (.78 + .06 * Math.sin(t * .21)) - s * .4}px`;
+  g.style.transform = `translate(${(t * 6) % (U * 6.4)}px, ${(t * 4) % (U * 6.4)}px)`;
+}
+
+// ------------------------------------------------------------------- api
+window.init = function (payload) {
+  P = payload;
+  const W = payload.size.w, H = payload.size.h;
+  VERT = H > W;
+  U = Math.min(W, H) / 100;
+  document.documentElement.style.setProperty("--u", `${U}px`);
+  document.body.classList.toggle("v", VERT);
+  document.getElementById("stage").classList.toggle("v", VERT);
+  if (VERT) document.documentElement.classList.add("v");
+  TOTAL = payload.duration || (payload.scenes.length ? payload.scenes[payload.scenes.length - 1].end : 1);
+  document.getElementById("handle").textContent = payload.handle || "";
+  document.getElementById("progress").style.display = VERT ? "block" : "none";
+  capEl = document.getElementById("captions");
+  const host = document.getElementById("scenes");
+  SC = payload.scenes.map(s => {
+    const root = el("div", "scene"); host.appendChild(root);
+    const d = Math.max(.5, s.end - s.start);
+    const b = BUILDERS[s.type] || BUILDERS.statement;
+    let update;
+    try { update = b(root, s.visual || {}, d); }
+    catch (e) { root.innerHTML = ""; update = sceneHook(root, { headline: (s.visual || {}).headline || (s.visual || {}).title || "" }, d, { small: true }); }
+    return { start: s.start, end: s.end, d, root, update };
+  });
+  PHRASES = buildPhrases(payload.words || [], VERT ? (payload.captions?.maxWords || 3) : (payload.captions?.maxWords || 7));
+  return { scenes: SC.length, phrases: PHRASES.length };
+};
+
+window.renderAt = function (t) {
+  renderBg(t);
+  for (const s of SC) {
+    const on = t >= s.start - 1e-6 && t < s.end;
+    s.root.style.visibility = on ? "visible" : "hidden";
+    if (!on) continue;
+    const tau = t - s.start;
+    const fin = s.start <= 0 ? 1 : easeOut(prog(tau, 0, .28));
+    const fout = s.end >= TOTAL - 1e-3 ? 1 : 1 - easeOut(prog(tau, s.d - .22, s.d));
+    s.root.style.opacity = Math.min(fin, fout);
+    s.update(tau);
+  }
+  renderCaptions(t);
+  document.getElementById("progress").style.width = `${100 * clamp(t / TOTAL)}%`;
+  return true;
+};
+</script>
+</body>
+</html>

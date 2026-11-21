@@ -17,3 +17,21 @@ creds/
 *.mp3
 .vscode/
 .idea/
+
+# --- Hardening: credential files (defense-in-depth) ---
+*.pem
+*.key
+*.p12
+*.pfx
+client_secret*.json
+credentials.json
+*_token.json
+*_credentials.json
+service_account*.json
+secrets/
+.env.local
+.env.*.local
+
+# Local-only, never published: weekly self-improvement reports and one-off tools
+meta_reports/
+make_public.py

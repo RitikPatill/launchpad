@@ -54,6 +54,24 @@ def compose(*, video_in: Path, audio_in: Path, output_path: Path) -> Path:
 
     cmd = [ff, "-y"]
 
+    # Audio normalization chain (EBU R128). Applied here so downstream
+    # stages can stream-copy audio without ever pushing peaks past -1.5
+    # dBTP. Values chosen for spoken narration:
+    #   I=-16   integrated loudness target (YouTube-safe; Shorts plays
+    #           loudly without auto-attenuation)
+    #   TP=-1.5 true-peak ceiling (prevents the clipping we were seeing
+    #           — max_volume sat at 0.0 dB with 2k+ clipped samples)
+    #   LRA=11  loudness range (keeps natural dynamics; not over-compressed)
+    # Followed by resample to 48k stereo so concat/polish stages don't
+    # have to resample mid-pipeline (which is what corrupted the bitrate
+    # on the previous build).
+    # Note: imageio-ffmpeg's bundled binary lacks soxr — we use the default
+    # swresample resampler, which is more than adequate for 24k -> 48k
+    # speech (the artifact difference is well below the audible threshold).
+    audio_chain = ("loudnorm=I=-16:TP=-1.5:LRA=11,"
+                   "aresample=48000,"
+                   "aformat=channel_layouts=stereo")
+
     if a_dur > v_dur + 0.5:
         # Hold the last video frame for (a_dur - v_dur) seconds via
         # tpad=stop_mode=clone. Audio plays in full.
@@ -62,8 +80,9 @@ def compose(*, video_in: Path, audio_in: Path, output_path: Path) -> Path:
             "-i", str(video_in),
             "-i", str(audio_in),
             "-filter_complex",
-            f"[0:v]tpad=stop_mode=clone:stop_duration={pad_s}[v]",
-            "-map", "[v]", "-map", "1:a",
+            (f"[0:v]tpad=stop_mode=clone:stop_duration={pad_s}[v];"
+             f"[1:a]{audio_chain}[a]"),
+            "-map", "[v]", "-map", "[a]",
         ]
     else:
         # Video is longer (or equal). Trim video to audio length so the
@@ -71,13 +90,14 @@ def compose(*, video_in: Path, audio_in: Path, output_path: Path) -> Path:
         cmd += [
             "-i", str(video_in),
             "-i", str(audio_in),
-            "-map", "0:v", "-map", "1:a",
+            "-filter_complex", f"[1:a]{audio_chain}[a]",
+            "-map", "0:v", "-map", "[a]",
             "-t", str(a_dur),
         ]
 
     cmd += [
         "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-        "-c:a", "aac", "-b:a", "128k",
+        "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
         "-pix_fmt", "yuv420p",  # YouTube compatibility
         "-movflags", "+faststart",
         str(output_path),

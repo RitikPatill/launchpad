@@ -17,5 +17,5 @@ uploader, deployer (HF Spaces), monitor (YouTube stats poller).
 
 from . import (  # noqa: F401
     screenplay, metadata, shorts_screenplay, shorts_metadata,
-    thumbnail, editor, meta_improver,
+    thumbnail, editor, meta_improver, shorts_quality,
 )

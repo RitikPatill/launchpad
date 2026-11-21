@@ -122,6 +122,38 @@ _MIGRATIONS = [
     "ALTER TABLE videos ADD COLUMN short_video_id TEXT",
     "ALTER TABLE videos ADD COLUMN short_url TEXT",
     "ALTER TABLE videos ADD COLUMN deploy_url TEXT",
+    # Self-healing: remember WHERE a video died so it can be revived at that
+    # stage after a cooldown, and how many times it has been revived.
+    "ALTER TABLE videos ADD COLUMN failed_stage TEXT",
+    "ALTER TABLE videos ADD COLUMN revive_count INTEGER DEFAULT 0",
+    "ALTER TABLE videos ADD COLUMN tts_engine TEXT",
+    "ALTER TABLE videos ADD COLUMN short_uploaded_at TEXT",
+    "ALTER TABLE videos ADD COLUMN thumb_pending INTEGER DEFAULT 0",
+    # video_analytics: retention/CTR snapshots from YouTube Analytics API,
+    # keyed by yt_video_id with a measured age_hours bucket so we can compare
+    # videos at equivalent maturity (24h/72h/7d/30d).
+    """
+    CREATE TABLE IF NOT EXISTS video_analytics (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        video_id INTEGER NOT NULL,
+        yt_video_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        age_hours INTEGER NOT NULL,
+        ts TEXT NOT NULL,
+        views INTEGER,
+        estimated_minutes_watched REAL,
+        average_view_duration REAL,
+        average_view_percentage REAL,
+        subscribers_gained INTEGER,
+        shares INTEGER,
+        likes INTEGER,
+        dislikes INTEGER,
+        comments INTEGER,
+        FOREIGN KEY(video_id) REFERENCES videos(id)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_video_analytics_yt ON video_analytics(yt_video_id)",
+    "CREATE INDEX IF NOT EXISTS idx_video_analytics_age ON video_analytics(age_hours)",
 ]
 
 
@@ -141,7 +173,13 @@ def log(level: str, component: str, message: str) -> None:
             "INSERT INTO log(ts, level, component, message) VALUES (?, ?, ?, ?)",
             (_now(), level, component, message),
         )
-    print(f"[{level}] {component}: {message}", flush=True)
+    line = f"[{level}] {component}: {message}"
+    try:
+        print(line, flush=True)
+    except UnicodeEncodeError:
+        # Under Task Scheduler stdout is a cp1252 file; a single "->" arrow or
+        # emoji in an LLM-written string must never crash a pipeline step.
+        print(line.encode("ascii", "replace").decode("ascii"), flush=True)
 
 
 # --- Videos -------------------------------------------------------------- #
@@ -199,23 +237,44 @@ def has_video_for(source_orchestrator: str, project_slug: str) -> bool:
 
 
 def uploads_in_window(hours: int) -> int:
+    """Long-form uploads in the window. Counted by uploaded_at regardless of
+    the row's CURRENT status: a video that is live but now in shorts_* /
+    embedding / failed_terminal still counts (status-based counting let
+    whole backlogs upload in one evening)."""
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
     with connect() as con:
         row = con.execute(
-            "SELECT COUNT(*) AS n FROM videos WHERE status IN ('uploaded','embedded') "
-            "AND uploaded_at >= ?", (cutoff,),
+            "SELECT COUNT(*) AS n FROM videos WHERE uploaded_at IS NOT NULL AND uploaded_at >= ?",
+            (cutoff,),
         ).fetchone()
         return row["n"]
 
 
 def last_uploaded_at() -> datetime | None:
+    """Most recent long-form upload, whatever the row's status is now."""
     with connect() as con:
         row = con.execute(
-            "SELECT MAX(uploaded_at) AS ts FROM videos WHERE status IN ('uploaded','embedded')"
+            "SELECT MAX(uploaded_at) AS ts FROM videos WHERE uploaded_at IS NOT NULL"
         ).fetchone()
     if row and row["ts"]:
         return datetime.fromisoformat(row["ts"])
     return None
+
+
+def last_short_uploaded_at() -> datetime | None:
+    """Most recent Short of any kind (main Short or extra Short)."""
+    ts = []
+    with connect() as con:
+        r = con.execute("SELECT MAX(short_uploaded_at) FROM videos").fetchone()
+        if r and r[0]:
+            ts.append(r[0])
+        try:
+            r = con.execute("SELECT MAX(uploaded_at) FROM extra_shorts").fetchone()
+            if r and r[0]:
+                ts.append(r[0])
+        except sqlite3.OperationalError:
+            pass  # extra_shorts table not created yet
+    return datetime.fromisoformat(max(ts)) if ts else None
 
 
 # --- Claude rate-limit --------------------------------------------------- #
@@ -255,6 +314,32 @@ def record_prompt_edit(agent_name: str, diff: str, rationale: str) -> int:
         return next_version
 
 
+def record_video_analytics(*, video_id: int, yt_video_id: str, kind: str,
+                            age_hours: int, metrics: dict) -> None:
+    """Snapshot of YouTube Analytics retention/CTR metrics for one video at
+    a measured age. Written by monitor.py whenever the analytics fetcher
+    returns a non-None payload."""
+    with connect() as con:
+        con.execute(
+            "INSERT INTO video_analytics(video_id, yt_video_id, kind, age_hours, "
+            "ts, views, estimated_minutes_watched, average_view_duration, "
+            "average_view_percentage, subscribers_gained, shares, likes, "
+            "dislikes, comments) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                video_id, yt_video_id, kind, age_hours, _now(),
+                metrics.get("views"),
+                metrics.get("estimatedMinutesWatched"),
+                metrics.get("averageViewDuration"),
+                metrics.get("averageViewPercentage"),
+                metrics.get("subscribersGained"),
+                metrics.get("shares"),
+                metrics.get("likes"),
+                metrics.get("dislikes"),
+                metrics.get("comments"),
+            ),
+        )
+
+
 def record_video_stats(*, video_id: int, yt_video_id: str, kind: str,
                         views: int | None, likes: int | None,
                         comments: int | None, favorites: int | None = None) -> None:
@@ -278,9 +363,13 @@ def latest_stats_for(yt_video_id: str) -> dict | None:
 
 
 def last_monitor_run_at() -> datetime | None:
+    # Keyed on an explicit completion marker. It used to be MAX(ts) of
+    # video_stats, which stayed empty without an API key, so the "daily"
+    # monitor ran every tick (23k log lines, 124k duplicate analytics rows).
     with connect() as con:
         row = con.execute(
-            "SELECT MAX(ts) AS ts FROM video_stats"
+            "SELECT MAX(ts) AS ts FROM log "
+            "WHERE component = 'monitor' AND message LIKE 'monitor run complete%'"
         ).fetchone()
     if row and row["ts"]:
         return datetime.fromisoformat(row["ts"])

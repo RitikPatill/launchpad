@@ -4,7 +4,7 @@ python-dotenv>=1.0.0
 
 # Video pipeline
 playwright>=1.40.0
-edge-tts>=6.1.0
+edge-tts>=7.3.1   # runs from the isolated tts-venv, see tts.py
 imageio-ffmpeg>=0.4.9
 pillow>=10.0.0
 
@@ -12,3 +12,8 @@ pillow>=10.0.0
 google-api-python-client>=2.100.0
 google-auth-oauthlib>=1.2.0
 google-auth-httplib2>=0.2.0
+
+# Local fallback voice: installed into %LOCALAPPDATA%\launchpad\tts-venv,
+# NOT the shared interpreter:  tts-venv\Scripts\pip install kokoro-onnx soundfile edge-tts==7.3.1
+# kokoro-onnx
+# soundfile

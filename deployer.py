@@ -202,6 +202,9 @@ def _push_to_space(workspace: Path, slug: str) -> None:
 
     # Push to the Space's main branch (HF Spaces uses main).
     push = _git(["push", "hf-space", "HEAD:main", "--force"], check=False)
+    # Strip the credentialed remote IMMEDIATELY (whether push succeeded or
+    # not) so the HF_TOKEN never lingers in workspace .git/config on disk.
+    _git(["remote", "remove", "hf-space"], check=False)
     if push.returncode != 0:
         raise DeployError(f"push to HF Space failed: {push.stderr[-500:]}")
 

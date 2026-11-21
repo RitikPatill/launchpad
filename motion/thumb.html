@@ -1,0 +1,53 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 1280px; height: 720px; overflow: hidden; background: #060A13; }
+body { font-family: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; color: #fff; -webkit-font-smoothing: antialiased; }
+#bg { position: absolute; inset: 0; background:
+  radial-gradient(circle at 78% 40%, rgba(34,211,238,.30), transparent 42%),
+  radial-gradient(circle at 92% 95%, rgba(139,92,246,.35), transparent 40%),
+  radial-gradient(circle at 5% 0%, rgba(34,211,238,.10), transparent 35%), #060A13; }
+#grid { position: absolute; inset: 0; background-image: linear-gradient(rgba(255,255,255,.045) 1px, transparent 1px),
+  linear-gradient(90deg, rgba(255,255,255,.045) 1px, transparent 1px); background-size: 48px 48px;
+  -webkit-mask-image: linear-gradient(90deg, transparent 0%, #000 55%); }
+#text { position: absolute; left: 56px; top: 0; bottom: 0; width: 640px; display: flex; flex-direction: column; justify-content: center; }
+#pill { align-self: flex-start; font-family: "Cascadia Code", Consolas, monospace; font-size: 22px; font-weight: 600; letter-spacing: .14em;
+  color: #04131A; background: linear-gradient(90deg, #22D3EE, #A78BFA); padding: 8px 16px; border-radius: 10px; margin-bottom: 26px; }
+#words { font-weight: 900; line-height: .98; letter-spacing: -.035em; text-transform: uppercase;
+  text-shadow: 0 6px 24px rgba(0,0,0,.6); }
+#words .em { color: #FDE047; }
+#visual { position: absolute; right: -40px; top: 120px; width: 640px; height: 400px; border-radius: 22px; overflow: hidden;
+  transform: perspective(1400px) rotateY(-14deg) rotateZ(2deg); border: 2px solid rgba(34,211,238,.55);
+  box-shadow: 0 0 60px rgba(34,211,238,.35), 0 30px 80px rgba(0,0,0,.7); background: #0B1220; }
+#visual img { width: 100%; height: 100%; object-fit: cover; }
+#handle { position: absolute; left: 58px; bottom: 34px; font-family: "Cascadia Code", Consolas, monospace; font-size: 22px; color: rgba(255,255,255,.55); }
+</style>
+</head>
+<body>
+<div id="bg"></div><div id="grid"></div>
+<div id="visual"><img id="img"></div>
+<div id="text"><div id="pill"></div><div id="words"></div></div>
+<div id="handle"></div>
+<script>
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+window.init = function (p) {
+  document.getElementById("pill").textContent = p.pill || "OPEN SOURCE";
+  document.getElementById("handle").textContent = p.handle || "";
+  const em = String(p.emphasis || "").toLowerCase().replace(/[^\w-]/g, "");
+  const words = String(p.text || "").split(/\s+/).filter(Boolean).slice(0, 5);
+  const box = document.getElementById("words");
+  box.innerHTML = words.map(w => `<span class="${w.toLowerCase().replace(/[^\w-]/g, "") === em ? "em" : ""}">${esc(w)}</span>`).join(" ");
+  // biggest font that fits the text column in at most 3 lines
+  let size = 170;
+  box.style.fontSize = size + "px";
+  while (size > 60 && (box.scrollHeight > 3.2 * size * .98 || box.scrollWidth > 640)) { size -= 4; box.style.fontSize = size + "px"; }
+  const img = document.getElementById("img");
+  if (p.image) img.src = p.image; else document.getElementById("visual").style.display = "none";
+  return new Promise(r => { if (!p.image || img.complete) r(size); else { img.onload = img.onerror = () => r(size); } });
+};
+</script>
+</body>
+</html>

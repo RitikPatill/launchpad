@@ -38,13 +38,82 @@ VIEWPORT IS VERTICAL (1080x1920). Browser actions must respect this:
 
 VIDEO STRUCTURE — 4-6 scenes totaling 30-50 seconds:
 
-  scene 1 (3-5s) — THE HOOK. A single sentence that makes the viewer
-                   stop swiping. Examples of good hooks:
-                     - "I built an AI that ships my GitHub portfolio
-                        for me."
-                     - "What if your side projects wrote themselves?"
+  scene 1 (3-5s) — THE HOOK. A single short sentence (HARD LIMIT:
+                   12 words or fewer — count them; v32 mcp-eval-studio
+                   2026-08-11 shipped a 20-word Shorts-adjacent hook
+                   and retained 19.57%, roughly a third of channel
+                   median). Make the viewer stop swiping. PREFER
+                   question-with-concrete-artifact framing —
+                   empirically (channel video_analytics 2026-06-06)
+                   this pattern produced the channel's highest Shorts
+                   retention (v11 "Can an LLM Detect Time-Series
+                   Anomalies from a CSV?" — 56.5% retention) while
+                   generic "I built an AI that..." first-person hooks
+                   (v8, v10, v12, v13 shorts) all retained <35%.
+
+                   SCENE-1 ANTI-PATTERNS (2026-08-14 audit — two
+                   consecutive Shorts flops in the same week). Do NOT
+                   ship a scene-1 hook that matches either shape:
+
+                   (a) CATEGORICAL-GENERIC THIRD-PERSON. Openers like
+                       "Every LLM app hits the token wall eventually"
+                       (v30 contextweaver — Shorts retention 9.60%,
+                       channel-worst since v16 rubricon). The subject
+                       is a category, not the viewer or a specific
+                       instance the viewer cares about. Rewrite to
+                       second-person ("Your app just hit the token
+                       wall") or specific-first-instance ("This LLM
+                       agent broke at 8k tokens").
+
+                   (b) BUZZWORD-STACKED SECOND-PERSON. Openers like
+                       "What if you could point a Claude agent at any
+                       MCP server and get a scored, traceable eval in
+                       seconds?" (v32 mcp-eval-studio — 20 words,
+                       FIVE technical noun-phrases, 19.57% Shorts
+                       retention). The framing is correct
+                       (second-person question) but the noun density
+                       is fatal — Shorts viewers cannot parse five
+                       domain terms in one clause before swiping. Cap
+                       yourself at TWO technical noun-phrases inside
+                       scene 1; the rest belong in scene 2. Every
+                       historical winner respects this: v11 (2 nouns
+                       "LLM/CSV" → 56.5%), v27 (2 nouns
+                       "prompt/regression" → 43.4%), v29 (2 nouns
+                       "LLM/question" → 39.4%). Every recent loser
+                       breaks it.
+
+                   NEW EVIDENCE (channel video_analytics 2026-06-12):
+                   hook LENGTH matters as much as hook shape. Compare
+                   scene-1 word counts vs retention:
+                     - v11 (9 words, "Can an LLM Detect Time-Series
+                       Anomalies from a CSV?") — 56.49% retention.
+                     - v13 (~15 words, "Most eval frameworks score what
+                       an agent returns. TrajectoryLab scores how it got
+                       there.") — 72.83% retention (channel best ever).
+                     - v15 authorlens (~30 words, two-clause compound
+                       question with technical follow-up) — 31.05%.
+                     - v16 rubricon (~26 words, claim + immediate
+                       technical extension + "Here's how that works")
+                       — 17.82% (channel worst). Viewers swiped before
+                       the hook had finished reading.
+                   Therefore: scene 1 must be ONE short sentence ONLY.
+                   Do NOT append a second clause or a "here's how" /
+                   "the way it works" follow-up inside scene 1. The
+                   technical extension belongs in scene 2, AFTER the
+                   viewer has committed.
+
+                   Examples of good hooks, ordered by empirical strength:
+                     - "Can an LLM detect anomalies in a raw CSV?"
+                       (9 words, question + concrete artifact — STRONGEST)
+                     - "What if your agent could grade its own code?"
+                       (9 words, question + concrete capability)
                      - "This memory system lets agents remember years
-                        of context."
+                        of context."  (10 words, claim + concrete payoff)
+                     - "I built an AI that ships my GitHub portfolio
+                        for me."  (first-person — use as last resort)
+                   Always name the concrete artifact (a CSV, a webpage,
+                   a graph, a repo) — abstract hooks like "an AI that
+                   helps you" underperform every time.
                    Recorder: goto the demo URL (or repo if no demo),
                    wait 1s on first frame.
 

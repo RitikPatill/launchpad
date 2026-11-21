@@ -39,9 +39,16 @@ Generate one title in each of these styles:
   3. How-to / tutorial framing
   4. Question framing
   5. Technical handle — uses one keyword recruiters search
+  6. Opinion / Comparison — "Why I chose X over Y", "X vs Y", or
+     "The problem with X". USE THIS STYLE ONLY when the project embodies
+     a defensible technical choice against a widely-known alternative
+     (Knowledge Graph vs RAG, YAML vs JSON, agent vs single-shot LLM,
+     local vs hosted, etc.). If no such comparison exists, output a
+     second Question-style variant instead so the array still has 6
+     entries.
 
-OUTPUT — return ONLY a JSON array of 5 strings, no other text:
-["...", "...", "...", "...", "..."]
+OUTPUT — return ONLY a JSON array of 6 strings, no other text:
+["...", "...", "...", "...", "...", "..."]
 """
 
 
@@ -62,6 +69,74 @@ CTR RUBRIC — score each candidate mentally on:
   - Searchable keyword present (someone looking for this would type X)
   - Honest > clickbait
   - Under 60 chars (YouTube truncates display)
+  - PREFER titles that include one of these canonical AI-engineering
+    search terms — viewers actively search for them and the channel's
+    own stats confirm they pull far more traffic than abstract phrasing:
+      RAG, LLM, Memory, Embeddings, Multi-Agent, Self-Improving,
+      Self-Correcting, Knowledge Graph, Vector, Retrieval, Eval,
+      Tool Use, Agent Architecture.
+    Empirical anchor (from the launchpad channel's own video_analytics
+    table as of 2026-05-25): titles containing one of these keywords
+    account for ~78% of all channel views; the single best-performing
+    title ("How to Build a Self-Improving Code Agent With RAG") earned
+    ~26x more views than the same project re-shipped as "How to Build
+    an LLM Agent With a Growing Skill Library". Treat this as
+    observation, not guess.
+  - AVOID leading with "<ProjectName>: <description>". Project-name-led
+    titles on this channel ("WebAct: Self-Correcting Browser Agent in
+    Python", "RubricLab: LLM-as-Judge Scoring for Agent Evals") sit at
+    the bottom of the view distribution. Lead with the value, technique,
+    or canonical keyword; the project name can come later in the title
+    or only in the description.
+  - OPINION / COMPARISON FRAME — soft preference (added 2026-09-01
+    based on v36 codegraph-agent). When the project embodies a
+    defensible technical choice against a widely-known alternative,
+    prefer the "Why I chose X over Y" / "X vs Y" / "The problem with
+    X" frame over the equivalent how-to. Empirical anchor: v36 "Why I
+    Used a Knowledge Graph Instead of RAG for Code Search" is the
+    channel's first opinion-framed title and retained 51.95 % long-form
+    (highest of the last 5 uploads); v35 "How to Grade Your Prompts
+    with an LLM-as-Judge Eval" (how-to frame on a project that had a
+    clear comparison available — eval-as-code vs vibes-checking) drew
+    1 long view. Sample size is 1 winner, so this is a soft preference,
+    not a hard rule: if the project has NO honest opposing alternative
+    (a pure utility, a novel technique with no incumbent), do NOT
+    manufacture a comparison — fall back to how-to or question. Honest
+    > clickbait still overrides.
+  - TITLE NOUN-DENSITY CAP + STACKED-TOOL-LIST BAN (HARD RULE — added
+    2026-08-20 based on v33 + v34 back-to-back regression). A "concept-
+    noun" here = an acronym, a domain term, a proper tool/model name,
+    or a jargon compound (e.g. "LLM", "CLIP", "DCT", "HuggingFace",
+    "eval harness", "source grounding", "Pydantic schema"). Cap: at
+    most FOUR concept-nouns in the final title. Additionally, DO NOT
+    ship a title in the shape "<Verb> <N1> with <N2>, <N3>, and <N4>"
+    (or any comma-separated tool enumeration in the second half of the
+    title). This construction is the title-side analogue of the scene-1
+    buzzword-stacking failure mode codified 2026-08-14 for screenplays.
+
+    Anti-examples from the launchpad channel's own video_analytics
+    (as of 2026-08-20):
+      - v33 "Detect AI Images with CLIP Embeddings, DCT, and
+        HuggingFace" — 5 concept-nouns, comma-tool-list → 2 long views.
+      - v34 "Typed LLM Extraction with Source Grounding and Evals" —
+        5+ concept-nouns, near-tool-list → 5 long views, 15.0 %
+        retention (channel-worst long-form of the last 8 uploads).
+
+    Positive comparators from the same table:
+      - v22 "LLM-as-Judge Prompt Eval and Versioning with PromptOps"
+        — 4 concept-nouns, natural syntax → 34 long views (winner).
+      - v26 "How to Build a Multi-Agent Code Review Pipeline" — 3
+        concept-nouns, How-to framing → 19 long views.
+      - v25 "How to Build an LLM-as-Judge Eval Pipeline from Scratch"
+        — 3 concept-nouns → 8 long views.
+
+    Every historical view-winner (≥ 8 long-form views) respected ≤ 4
+    concept-nouns and avoided the tool-list construction; every
+    bottom-quartile loser stacked ≥ 5 or used the "with X, Y, and Z"
+    enumeration. If a candidate title needs 5+ nouns to be accurate,
+    the candidate is too technical for the *title* — move the extra
+    tool names into the description body (first 2 lines) where they
+    still catch search hits without visual overload.
 
 OUTPUT — return ONLY a JSON object:
 {{
@@ -92,7 +167,7 @@ source."
 
 "AI disclosure: this video was scripted, narrated, and edited by an
 autonomous agent pipeline I designed. The voice you hear is AI-generated
-(Microsoft Edge TTS). The code being demonstrated is real and runnable.
+(synthetic text-to-speech). The code being demonstrated is real and runnable.
 This disclosure satisfies YouTube's 2026 synthetic-media policy."
 
 CONSTRAINTS:
