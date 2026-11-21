@@ -116,6 +116,55 @@ def _resumable_upload(stage: str):
                            "ORDER BY created_at LIMIT 1", (stage,)).fetchone()
 
 
+_TOPIC_STOP = {"the", "and", "for", "with", "your", "you", "its", "that", "this", "what", "why", "how", "when",
+               "from", "into", "over", "before", "after", "one", "two", "not", "can", "are", "does", "open",
+               "source", "project", "tool", "built", "using", "use", "who", "get", "got"}
+
+
+def _topic_words(*texts) -> set[str]:
+    out = set()
+    for t in texts:
+        for w in re.findall(r"[a-z0-9]+", str(t or "").lower()):
+            if len(w) > 2 and w not in _TOPIC_STOP:
+                out.add(w[:-1] if len(w) > 4 and w.endswith("s") else w)
+    return out
+
+
+UPLOAD_PICK_WINDOW = 4
+UPLOAD_MAX_WAIT_DAYS = 10
+
+
+def _next_upload_candidate():
+    """Which ready long-form goes live next: of the UPLOAD_PICK_WINDOW oldest,
+    the one least like the last two uploads (Jaccard over the PROJECT's topic
+    words - name and description, not the packaging title, which is written
+    to sound different on purpose), so the channel never runs near-identical
+    topics back to back. Ties go to the oldest, and a video ready for
+    UPLOAD_MAX_WAIT_DAYS goes first."""
+    with state.connect() as con:
+        ready = list(con.execute("SELECT * FROM videos WHERE status = 'uploading' AND youtube_video_id IS NULL "
+                                 "ORDER BY created_at LIMIT ?", (UPLOAD_PICK_WINDOW,)))
+        recent = list(con.execute("SELECT project_slug, project_title, project_description FROM videos "
+                                  "WHERE uploaded_at IS NOT NULL ORDER BY uploaded_at DESC LIMIT 2"))
+    if len(ready) < 2 or not recent:
+        return ready[0] if ready else None
+    try:
+        ready_since = datetime.fromisoformat(ready[0]["updated_at"])
+        if ready_since.tzinfo is None:
+            ready_since = ready_since.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) - ready_since > timedelta(days=UPLOAD_MAX_WAIT_DAYS):
+            return ready[0]
+    except (TypeError, ValueError):
+        pass
+    seen = [_topic_words(r["project_slug"], r["project_title"], r["project_description"]) for r in recent]
+
+    def likeness(v) -> float:
+        w = _topic_words(v["project_slug"], v["project_title"], v["project_description"])
+        return max((len(w & s) / len(w | s)) if (w | s) else 0.0 for s in seen)
+
+    return min(ready, key=likeness)          # min() keeps the oldest on ties
+
+
 def _last_public_upload():
     """Most recent public upload of any kind (long-form, main Short, extra Short)."""
     ts = [t for t in (state.last_uploaded_at(), state.last_short_uploaded_at()) if t]
@@ -612,6 +661,17 @@ def _step_shorts_uploading(v) -> None:
     tags = md.get("tags") or ["shorts", "ai", "llm", "agents"]
     if v["youtube_url"] and v["youtube_url"] not in description:
         description = f"Full video: {v['youtube_url']}\n\n{description}"   # cross-promote the long-form
+    # Honesty guard: metadata written by older code (or by hand) must never
+    # publish without the AI disclosure, in either language.
+    ai = motion_pipeline.packaging.AI_DISCLOSURE
+    if "ai disclosure" not in description.lower():
+        head, sep, tail = description.rpartition("#Shorts")
+        description = (f"{head.rstrip()}\n\n{ai['en']}\n\n{sep}{tail}" if sep
+                       else f"{description.rstrip()}\n\n{ai['en']}")
+    de_md = dict(md.get("de") or {})
+    if de_md.get("description") and "ki-hinweis" not in de_md["description"].lower():
+        de_md["description"] = de_md["description"].rstrip() + "\n\n" + ai["de"]
+    md["de"] = de_md
 
     # Shorts are the reach engine, so a failed upload is RETRIED (the tick's
     # failure handling + revive) instead of being dropped. Record-first: the
@@ -699,7 +759,9 @@ def tick() -> None:
         "embedding",
     )
     for status_to_drive in PIPELINE:
-        v = _resumable_upload(status_to_drive) or state.next_video_in_status(status_to_drive)
+        v = (_resumable_upload(status_to_drive)
+             or (_next_upload_candidate() if status_to_drive == "uploading" else None)
+             or state.next_video_in_status(status_to_drive))
         if not v:
             continue
 
@@ -920,7 +982,7 @@ def _preflight_ok(*, require_yt: bool = False) -> bool:
 def _maybe_backfill_thumbnails() -> None:
     """Custom thumbnails under YouTube's per-channel thumbnail rate limit.
     1) NEW videos whose thumbnail was refused (thumb_pending): retried every
-       3 h, always first.
+       hour (a new video's first day decides its reach), always first.
     2) Back catalogue: at most BACKFILL_PER_DAY per 24 h, only OUTSIDE the
        upload window (so a new upload always finds allowance left), stopping
        at the first refusal."""
@@ -932,7 +994,7 @@ def _maybe_backfill_thumbnails() -> None:
         return not marker.exists() or time.time() - marker.stat().st_mtime >= hours * 3600
 
     pend_marker, back_marker = base / ".last_pending_try", base / ".last_backfill"
-    if due(pend_marker, 3):
+    if due(pend_marker, 1):
         with state.connect() as con:
             pending = list(con.execute(
                 "SELECT id, youtube_video_id, thumbnail_path FROM videos WHERE thumb_pending = 1 "

@@ -154,7 +154,7 @@ YOUR THREE OUTPUTS:
    - the honesty rules: the AI-disclosure sentence, "never invent code,
      output or numbers", containsSyntheticMedia
 
-3. Edits are recorded automatically from the git diff of agents/; put the
+3. Edits are recorded automatically as a diff of the files you change; put the
    rationale for each edit in Section E of the report.
 
 Each edit must be small, well-justified, and only after observing
@@ -174,9 +174,18 @@ def run_meta_review() -> str:
     out_dir = BASE_DIR / "meta_reports"
     out_dir.mkdir(exist_ok=True)
 
+    import alerts
+    if not _smoke_ok():
+        # The prompts on disk already fail their own smoke test (a deploy in
+        # flight, a manual edit): never let the model edit on top of that,
+        # and never blame - or revert - its edit for it.
+        alerts.notify("meta-smoke-baseline", "Weekly self-improvement skipped",
+                      "the prompt smoke test fails BEFORE any edit; check agents/ "
+                      "(python orchestrator.py health)", level="ERROR")
+        return ""
     state.log("INFO", "meta_improver",
               f"weekly Opus meta-review starting (model={META_MODEL})")
-    before = _agents_diff()
+    snap = {f: (BASE_DIR / f).read_bytes() for f in EDITABLE_FILES if (BASE_DIR / f).exists()}
     output = claude_cli.call_claude(
         PROMPT.format(today=today, cutoff=cutoff, data=_collect_data(),
                       max_edits=MAX_META_EDITS_PER_RUN),
@@ -194,22 +203,37 @@ def run_meta_review() -> str:
     )
     report = out_dir / f"{today}.md"
     report.write_text(str(output).strip() + "\n", encoding="utf-8")
-    after = _agents_diff()
-    if after and after != before:
+    changed = [f for f, b in snap.items() if (BASE_DIR / f).read_bytes() != b]
+    if changed:
         if _smoke_ok():
-            state.record_prompt_edit("meta_improver", after[:6000],
+            state.record_prompt_edit("meta_improver", _delta(snap, changed)[:6000],
                                      f"weekly review {today}; rationale in meta_reports/{today}.md")
         else:
-            # A broken prompt edit must never crash-loop the pipeline.
-            import subprocess
-            subprocess.run(["git", "-C", str(BASE_DIR), "checkout", "--", "agents"], capture_output=True)
-            import alerts
+            # A broken prompt edit must never crash-loop the pipeline. Restore
+            # ONLY the files this run changed - never other uncommitted work.
+            for f in changed:
+                (BASE_DIR / f).write_bytes(snap[f])
             alerts.notify("meta-edit-reverted", "Weekly self-improvement edit reverted",
                           "the prompt edit broke an import/template smoke test; reverted automatically",
                           level="ERROR")
     state.log("INFO", "meta_improver",
               f"weekly review complete ({len(output)} chars)")
     return str(out_dir / f"{today}.md")
+
+
+EDITABLE_FILES = ("agents/storyboard.py", "agents/packaging.py", "agents/screenplay.py",
+                  "agents/metadata.py", "agents/shorts_screenplay.py", "agents/shorts_metadata.py")
+
+
+def _delta(snap: dict, changed: list[str]) -> str:
+    """Unified diff of what THIS run changed (not everything uncommitted)."""
+    import difflib
+    out = []
+    for f in changed:
+        old = snap[f].decode("utf-8", errors="replace").splitlines(True)
+        new = (BASE_DIR / f).read_text(encoding="utf-8", errors="replace").splitlines(True)
+        out.append("".join(difflib.unified_diff(old, new, fromfile=f"a/{f}", tofile=f"b/{f}")))
+    return "\n".join(out).strip()
 
 
 EDITABLE_RULES = [
@@ -233,7 +257,7 @@ def _smoke_ok() -> bool:
         "kw = dict(title='t', description='d', repo_url='r', format_rules='f', playbook='p', catalog='c', material='m', insights='i');"
         "s.WRITER.format(**kw); s.EDITOR.format(draft='x', **{k: v for k, v in kw.items() if k != 'insights'});"
         "s.RULES_SHORT.format(angle='a'); s.FIX.format(claims='c', material='m', storyboard='s');"
-        "p.LONG.format(title='t', description='d', repo_url='r', script='s', playbook='p', insights='i');"
+        "p.LONG.format(title='t', description='d', repo_url='r', script='s', playbook='p', insights='i', others='o');"
         "p.SHORT.format(title='t', description='d', script='s'); p.TRANSLATE.format(lines='[]')"
     )
     try:
@@ -241,16 +265,6 @@ def _smoke_ok() -> bool:
         return r.returncode == 0
     except Exception:
         return False
-
-
-def _agents_diff() -> str:
-    import subprocess
-    try:
-        p = subprocess.run(["git", "-C", str(BASE_DIR), "diff", "--", "agents"],
-                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
-        return p.stdout.strip()
-    except Exception:
-        return ""
 
 
 def _collect_data() -> str:

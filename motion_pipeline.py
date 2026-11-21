@@ -98,21 +98,46 @@ def script_long(v, workspace: Path | None) -> dict:
                                          repo_url=v["project_repo_url"], ctx=ctx)
         cache.write_text(json.dumps(sb, indent=1), encoding="utf-8")
     sb = _validated(v, sb, kind="long", ctx=ctx)
-    pk = None
-    for attempt in range(2):
-        try:
-            pk = packaging.package_long(title=v["project_title"], description=v["project_description"],
-                                        repo_url=v["project_repo_url"], storyboard=sb)
-            break
-        except Exception as e:
-            from claude_cli import RateLimited
-            if isinstance(e, RateLimited):
-                raise
-            state.log("WARN", "motion", f"video #{v['id']} packaging attempt {attempt + 1} failed: {str(e)[:200]}")
-    if pk is None:
-        pk = _fallback_package(v)
+    pk = repackage_long(v, sb)
     cache.unlink(missing_ok=True)
     return {"engine": "motion", "storyboard": sb, "packaging": pk}
+
+
+def other_titles(v, limit: int = 15) -> list[str]:
+    """Titles subscribers saw recently or will see next (never this video's),
+    so packaging can pick a clearly different angle."""
+    from config import MAX_REVIVES
+    with state.connect() as con:
+        rows = con.execute(      # parked rows with revives left will still be published
+            "SELECT title FROM videos WHERE id != ? AND COALESCE(title, '') != '' AND "
+            "(uploaded_at IS NOT NULL OR status IN ('recording', 'rendering', 'uploading') "
+            " OR (status = 'failed_terminal' AND COALESCE(revive_count, 0) < ?)) "
+            "ORDER BY COALESCE(uploaded_at, '9999') DESC, id DESC LIMIT ?",
+            (v["id"], MAX_REVIVES, limit * 2)).fetchall()
+    return [r["title"] for r in rows if not packaging._looks_german(r["title"])][:limit]
+
+
+def repackage_long(v, sb: dict, attempts: int = 3) -> dict:
+    """Packaging with up to `attempts` tries (each retry is told why the last
+    answer was rejected), then a deterministic fallback."""
+    from claude_cli import RateLimited
+    note = ""
+    others = other_titles(v)
+    for attempt in range(attempts):
+        try:
+            return packaging.package_long(title=v["project_title"], description=v["project_description"],
+                                          repo_url=v["project_repo_url"], storyboard=sb,
+                                          other_titles=others, note=note)
+        except RateLimited:
+            raise
+        except Exception as e:
+            state.log("WARN", "motion", f"video #{v['id']} packaging attempt {attempt + 1} failed: {str(e)[:200]}")
+            note = packaging.retry_note(e)
+    import alerts             # never silent: a generic package costs reach, a human should know
+    alerts.notify(f"pkg-fallback-{v['id']}", f"Video #{v['id']}: generic fallback packaging",
+                  f"{attempts} packaging answers were rejected (last: {note[:200]}). The video still ships "
+                  "with its project name as title; re-run packaging if you want a better one.")
+    return _fallback_package(v)
 
 
 def record_long(v) -> str:
@@ -215,7 +240,20 @@ def script_short(v, workspace: Path | None, out_dir: Path, angle: str = "") -> N
     sb = storyboard.write_storyboard(kind="short", title=v["project_title"], description=v["project_description"],
                                      repo_url=v["project_repo_url"], ctx=ctx, angle=angle)
     sb = _validated(v, sb, kind="short", ctx=ctx)
-    pk = packaging.package_short(title=v["project_title"], description=v["project_description"], storyboard=sb)
+    from claude_cli import RateLimited
+    pk, note = None, ""
+    for attempt in range(3):           # never throw away the storyboard over one bad packaging answer
+        try:
+            pk = packaging.package_short(title=v["project_title"], description=v["project_description"],
+                                         storyboard=sb, note=note)
+            break
+        except RateLimited:
+            raise
+        except Exception as e:
+            if attempt == 2:
+                raise
+            state.log("WARN", "motion", f"video #{v['id']} short packaging attempt {attempt + 1} failed: {str(e)[:200]}")
+            note = packaging.retry_note(e)
     out_dir.mkdir(parents=True, exist_ok=True)
     desc = (pk.get("description") or "").strip()
     links = []
